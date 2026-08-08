@@ -232,6 +232,21 @@ body {
 .popup-btn-primary { background: #2563eb; color: #fff; }
 .popup-btn-dropped { background: rgba(16,185,129,0.15); color: #10b981; border: 1px solid rgba(16,185,129,0.4); }
 .popup-btn-pending { background: rgba(245,158,11,0.15); color: #d97706; border: 1px solid rgba(245,158,11,0.3); }
+.popup-btn-route { background: #2563eb; color: #fff; }
+.popup-btn-danger { background: rgba(239,68,68,0.15); color: #ef4444; border: 1px solid rgba(239,68,68,0.3); }
+
+/* ─── Route Tray ─────────────────────────────────────── */
+.route-tray { gap: 0.5rem; }
+.route-list { display: flex; flex-direction: column; gap: 0.4rem; }
+.route-item { display: flex; align-items: center; gap: 0.5rem; padding: 0.4rem 0; border-bottom: 1px solid var(--border-color); }
+.route-item:last-child { border-bottom: none; }
+.route-num { font-size: 0.9rem; font-weight: 700; color: var(--primary-accent); min-width: 1.4rem; }
+.route-info { flex: 1; min-width: 0; }
+.route-name { font-size: 0.85rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.route-addr { font-size: 0.7rem; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.route-ctrls { display: flex; gap: 2px; flex-shrink: 0; }
+.route-ctrls .btn-small { min-height: 30px; padding: 0.15rem 0.4rem; font-size: 0.7rem; }
+.route-badge-sm { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; border-radius: 50%; background: #f59e0b; color: #fff; font-size: 0.7rem; font-weight: 700; vertical-align: middle; margin-right: 2px; }
 
 /* ─── Responsive ─────────────────────────────────────── */
 @media (min-width: 500px) {

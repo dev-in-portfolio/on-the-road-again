@@ -37,6 +37,53 @@ let edStep: 'entry' | 'confirm' | 'duplicate' = 'entry';
 let edAcSug: AutocompleteSuggestion[] = [], edAcVis = false;
 let edAcAbort: AbortController | null = null, edAcTimer: ReturnType<typeof setTimeout> | null = null;
 
+// ─── Route State ───────────────────────────────────────
+const ROUTE_KEY = 'otra.currentRoute';
+const MAX_ROUTE = 10;
+let routeIds: string[] = [];
+
+function loadRoute(): string[] {
+  try { const raw = localStorage.getItem(ROUTE_KEY); return raw ? JSON.parse(raw) as string[] : []; }
+  catch { return []; }
+}
+function saveRoute() { try { localStorage.setItem(ROUTE_KEY, JSON.stringify(routeIds)); } catch { /* storage unavailable */ } }
+function getRouteIndex(id: string): number { return routeIds.indexOf(id); }
+function isInRoute(id: string): boolean { return routeIds.indexOf(id) >= 0; }
+
+function reconcileRoute() {
+  // Remove stale IDs: prospects that are no longer active (archived, deleted, or missing coords)
+  const activeIds = new Set(prospects.filter(p => p.latitude != null && p.longitude != null).map(p => p.id));
+  const cleaned = routeIds.filter(id => activeIds.has(id));
+  if (cleaned.length !== routeIds.length) { routeIds = cleaned; saveRoute(); }
+}
+
+function addToRoute(id: string): string | null {
+  if (isInRoute(id)) return null;
+  if (routeIds.length >= MAX_ROUTE) return `Route is full — maximum ${MAX_ROUTE} stops.`;
+  routeIds.push(id);
+  saveRoute();
+  refreshMarkers();
+  return null;
+}
+function removeFromRoute(id: string) {
+  routeIds = routeIds.filter(rid => rid !== id);
+  saveRoute();
+  refreshMarkers();
+}
+function moveRouteItem(idx: number, dir: -1 | 1) {
+  const nxt = idx + dir; if (nxt < 0 || nxt >= routeIds.length) return;
+  [routeIds[idx], routeIds[nxt]] = [routeIds[nxt], routeIds[idx]];
+  saveRoute();
+  refreshMarkers();
+}
+function clearRoute() {
+  if (!routeIds.length) return;
+  if (!confirm(`Clear all ${routeIds.length} selected stops?`)) return;
+  routeIds = [];
+  saveRoute();
+  refreshMarkers();
+}
+
 // ─── Map ───────────────────────────────────────────────
 let map: maplibregl.Map | null = null;
 let markers: Map<string, maplibregl.Marker> = new Map();
@@ -67,39 +114,45 @@ function fitMap() {
   map.fitBounds(b, { padding: 60, maxZoom: 14 });
 }
 
-function mkEl(p: Prospect): HTMLElement {
-  const el = document.createElement('div');
-  el.className = `map-marker ${p.dropped_off ? 'marker-dropped' : 'marker-active'}`;
-  el.setAttribute('aria-label', `${p.restaurant_name}${p.dropped_off ? ' — Dropped Off' : ''}`);
-  el.innerHTML = p.dropped_off
-    ? `<svg width="30" height="40" viewBox="0 0 30 40"><path d="M15 1C7.3 1 1 7.3 1 15c0 10 14 24 14 24s14-14 14-24C29 7.3 22.7 1 15 1z" fill="#10b981" stroke="#047857" stroke-width="1.5"/><text x="15" y="19" text-anchor="middle" fill="white" font-size="15" font-weight="bold">✓</text></svg>`
-    : `<svg width="30" height="40" viewBox="0 0 30 40"><path d="M15 1C7.3 1 1 7.3 1 15c0 10 14 24 14 24s14-14 14-24C29 7.3 22.7 1 15 1z" fill="#2563eb" stroke="#1e40af" stroke-width="1.5"/><circle cx="15" cy="13" r="6" fill="white"/></svg>`;
-  el.style.cursor = 'pointer';
-  return el;
+function markerHTML(p: Prospect): string {
+  const ri = getRouteIndex(p.id);
+  const numBadge = ri >= 0 ? `<text x="15" y="19" text-anchor="middle" fill="white" font-size="13" font-weight="bold">${ri + 1}</text>` : '';
+  if (p.dropped_off) {
+    return `<svg width="30" height="40" viewBox="0 0 30 40"><path d="M15 1C7.3 1 1 7.3 1 15c0 10 14 24 14 24s14-14 14-24C29 7.3 22.7 1 15 1z" fill="#10b981" stroke="#047857" stroke-width="1.5"/>${numBadge || '<text x="15" y="19" text-anchor="middle" fill="white" font-size="14" font-weight="bold">✓</text>'}</svg>`;
+  }
+  return `<svg width="30" height="40" viewBox="0 0 30 40"><path d="M15 1C7.3 1 1 7.3 1 15c0 10 14 24 14 24s14-14 14-24C29 7.3 22.7 1 15 1z" fill="${ri >= 0 ? '#f59e0b' : '#2563eb'}" stroke="${ri >= 0 ? '#b45309' : '#1e40af'}" stroke-width="1.5"/>${numBadge || '<circle cx="15" cy="13" r="6" fill="white"/>'}</svg>`;
+}
+
+function markerAria(p: Prospect): string {
+  const ri = getRouteIndex(p.id);
+  const parts = [p.restaurant_name];
+  if (ri >= 0) parts.unshift(`Stop ${ri + 1} —`);
+  if (p.dropped_off) parts.push('— Dropped Off');
+  return parts.join(' ');
 }
 
 function refreshMarkers() {
   if (!map) return;
   const ids = new Set(prospects.map(p => p.id));
-  // Remove markers for prospects no longer present
   for (const [id, m] of markers) { if (!ids.has(id)) { m.remove(); markers.delete(id); } }
   for (const p of prospects) {
     if (p.latitude == null || p.longitude == null) continue;
     const ex = markers.get(p.id);
+    const rCls = getRouteIndex(p.id) >= 0 ? ' marker-routed' : '';
     if (ex) {
-      // Mutate existing marker element in-place (don't replaceChild — breaks MapLibre ownership)
       const el = ex.getElement();
-      el.className = `map-marker ${p.dropped_off ? 'marker-dropped' : 'marker-active'}`;
-      el.setAttribute('aria-label', `${p.restaurant_name}${p.dropped_off ? ' — Dropped Off' : ''}`);
-      el.innerHTML = p.dropped_off
-        ? `<svg width="30" height="40" viewBox="0 0 30 40"><path d="M15 1C7.3 1 1 7.3 1 15c0 10 14 24 14 24s14-14 14-24C29 7.3 22.7 1 15 1z" fill="#10b981" stroke="#047857" stroke-width="1.5"/><text x="15" y="19" text-anchor="middle" fill="white" font-size="15" font-weight="bold">✓</text></svg>`
-        : `<svg width="30" height="40" viewBox="0 0 30 40"><path d="M15 1C7.3 1 1 7.3 1 15c0 10 14 24 14 24s14-14 14-24C29 7.3 22.7 1 15 1z" fill="#2563eb" stroke="#1e40af" stroke-width="1.5"/><circle cx="15" cy="13" r="6" fill="white"/></svg>`;
-      // Move marker if coordinates changed (ISSUE 1 fix)
+      el.className = `map-marker ${p.dropped_off ? 'marker-dropped' : 'marker-active'}${rCls}`;
+      el.setAttribute('aria-label', markerAria(p));
+      el.innerHTML = markerHTML(p);
       ex.setLngLat([p.longitude, p.latitude]);
     } else {
-      const nel = mkEl(p);
-      const mk = new maplibregl.Marker({ element: nel, anchor: 'bottom' }).setLngLat([p.longitude, p.latitude]).addTo(map!);
-      nel.addEventListener('click', () => openPopup(p, mk));
+      const el = document.createElement('div');
+      el.className = `map-marker ${p.dropped_off ? 'marker-dropped' : 'marker-active'}${rCls}`;
+      el.setAttribute('aria-label', markerAria(p));
+      el.innerHTML = markerHTML(p);
+      el.style.cursor = 'pointer';
+      const mk = new maplibregl.Marker({ element: el, anchor: 'bottom' }).setLngLat([p.longitude, p.latitude]).addTo(map!);
+      el.addEventListener('click', () => openPopup(p, mk));
       markers.set(p.id, mk);
     }
   }
@@ -111,19 +164,34 @@ function openPopup(p: Prospect, mk: maplibregl.Marker) {
   if (!map) return;
   if (mapPopup) mapPopup.remove();
   const a = p.address_normalized || p.address_input;
+  const inRt = isInRoute(p.id);
+  const ri = getRouteIndex(p.id);
   const html = `<div class="map-popup">
-    <div class="popup-name">${esc(p.restaurant_name)}</div>
+    <div class="popup-name">${ri >= 0 ? `<span class="route-badge-sm">${ri + 1}</span> ` : ''}${esc(p.restaurant_name)}</div>
     <div class="popup-addr">${esc(a)}</div>
     <div class="${p.dropped_off ? 'popup-dropped' : 'popup-pending'}">${p.dropped_off ? '✓ Dropped Off ' + (p.dropped_off_at ? new Date(p.dropped_off_at).toLocaleDateString() : '') : 'Not Dropped Off'}</div>
     <div class="popup-actions">
       <button class="popup-btn popup-btn-primary" data-act="pop-view" data-id="${p.id}">View</button>
-      <button class="popup-btn ${p.dropped_off ? 'popup-btn-dropped' : 'popup-btn-pending'}" data-act="pop-toggle" data-id="${p.id}" data-dr="${p.dropped_off}">${p.dropped_off ? 'Undo' : 'Mark Dropped Off'}</button>
+      <button class="popup-btn ${p.dropped_off ? 'popup-btn-dropped' : 'popup-btn-pending'}" data-act="pop-toggle" data-id="${p.id}" data-dr="${p.dropped_off}">${p.dropped_off ? 'Undo' : 'Drop'}</button>
+    </div>
+    <div class="popup-actions" style="margin-top:4px;">
+      <button class="popup-btn ${inRt ? 'popup-btn-danger' : 'popup-btn-route'}" data-act="pop-route" data-id="${p.id}">${inRt ? 'Remove from Route' : '+ Add to Route'}</button>
     </div></div>`;
   mapPopup = new maplibregl.Popup({ offset: [0, -32], closeButton: true, maxWidth: '280px' }).setLngLat(mk.getLngLat()).setHTML(html).addTo(map);
   mapPopup.on('open', () => {
     document.querySelector('[data-act="pop-view"]')?.addEventListener('click', (e) => { const id = (e.target as HTMLElement).getAttribute('data-id'); if (id) { selectedProspectId = id; panelView = 'panel-detail'; renderPanel(); } });
     document.querySelector('[data-act="pop-toggle"]')?.addEventListener('click', (e) => { const id = (e.target as HTMLElement).getAttribute('data-id'); const dr = (e.target as HTMLElement).getAttribute('data-dr') === 'true'; if (id) mapToggleDropped(id, dr); });
+    document.querySelector('[data-act="pop-route"]')?.addEventListener('click', (e) => { const id = (e.target as HTMLElement).getAttribute('data-id'); if (id) toggleRouteSelection(id); });
   });
+}
+
+function toggleRouteSelection(id: string) {
+  if (isInRoute(id)) { removeFromRoute(id); } else {
+    const err = addToRoute(id);
+    if (err) { errorMessage = err; renderPanel(); return; }
+  }
+  const mk = markers.get(id); const p = getById(id);
+  if (mk && p) openPopup(p, mk);
 }
 
 async function mapToggleDropped(id: string, cur: boolean) {
@@ -174,7 +242,7 @@ async function loadData() {
   loading = true; errorMessage = null; renderPanel();
   try { prospects = await fetchProspects(searchQuery || undefined, false); }
   catch (e: unknown) { errorMessage = e instanceof Error ? e.message : 'Failed to load.'; }
-  finally { loading = false; refreshMarkers(); renderPanel(); }
+  finally { loading = false; reconcileRoute(); refreshMarkers(); renderPanel(); }
 }
 
 // ─── Autocomplete ──────────────────────────────────────
@@ -318,7 +386,7 @@ async function handleToggleDropped(id: string, cur: boolean) {
 }
 
 async function handleArchive(id: string) {
-  try { await archiveProspect(id); prospects = prospects.filter(p => p.id !== id); refreshMarkers(); if (selectedProspectId === id) { selectedProspectId = null; panelView = 'panel-list'; } renderPanel(); }
+  try { await archiveProspect(id); removeFromRoute(id); prospects = prospects.filter(p => p.id !== id); refreshMarkers(); if (selectedProspectId === id) { selectedProspectId = null; panelView = 'panel-list'; } renderPanel(); }
   catch (e: unknown) { errorMessage = e instanceof Error ? e.message : 'Failed.'; renderPanel(); }
 }
 
@@ -329,7 +397,7 @@ async function handleRestore(id: string) {
 
 async function handleDelete(id: string) {
   if (!confirm('Permanently delete?')) return;
-  try { await deleteProspect(id); prospects = prospects.filter(p => p.id !== id); refreshMarkers(); if (selectedProspectId === id) { selectedProspectId = null; panelView = 'panel-list'; } renderPanel(); }
+  try { await deleteProspect(id); removeFromRoute(id); prospects = prospects.filter(p => p.id !== id); refreshMarkers(); if (selectedProspectId === id) { selectedProspectId = null; panelView = 'panel-list'; } renderPanel(); }
   catch (e: unknown) { errorMessage = e instanceof Error ? e.message : 'Failed.'; renderPanel(); }
 }
 
@@ -343,13 +411,31 @@ function renderPanel() {
 
 function rList(p: HTMLElement) {
   const nc = prospects.filter(x => x.latitude == null || x.longitude == null).length;
+  const routeItems = routeIds.map(id => getById(id)).filter(Boolean) as Prospect[];
   p.innerHTML = `<div class="panel-header"><h1 class="app-title">ON THE ROAD AGAIN</h1><p class="app-subtitle">${prospects.length} prospect${prospects.length !== 1 ? 's' : ''}</p></div>
     ${errorMessage ? `<div class="error-banner">${esc(errorMessage)}</div>` : ''}
     ${nc > 0 && !loading ? `<div class="info-banner">${nc} prospect${nc !== 1 ? 's' : ''} need${nc === 1 ? 's' : ''} an address update for the map.</div>` : ''}
     <div class="panel-actions-row"><button class="btn btn-primary" id="btn-pl-add">+ Add Prospect</button><button class="btn btn-secondary" id="btn-pl-arch">📦 Archived</button></div>
+    ${routeItems.length > 0 ? `<div class="card route-tray">
+      <div class="card-title"><span>🚚 Current Route</span><span class="badge badge-pending">${routeItems.length} / ${MAX_ROUTE}</span></div>
+      <div class="route-list">${routeItems.map((x, i) => `<div class="route-item">
+        <span class="route-num">${i + 1}.</span>
+        <div class="route-info"><div class="route-name">${esc(x.restaurant_name)}</div><div class="route-addr">${esc(x.address_normalized || x.address_input)}</div></div>
+        <div class="route-ctrls">
+          <button class="btn btn-small btn-secondary route-up" data-idx="${i}" ${i === 0 ? 'disabled' : ''} aria-label="Move ${esc(x.restaurant_name)} up">↑</button>
+          <button class="btn btn-small btn-secondary route-dn" data-idx="${i}" ${i === routeItems.length - 1 ? 'disabled' : ''} aria-label="Move ${esc(x.restaurant_name)} down">↓</button>
+          <button class="btn btn-small btn-danger route-rm" data-id="${x.id}" aria-label="Remove ${esc(x.restaurant_name)} from route">✕</button>
+        </div>
+      </div>`).join('')}</div>
+      <button class="btn btn-secondary btn-full" id="btn-clear-route">Clear Route</button>
+    </div>` : ''}
     <div class="prospect-list">${loading ? '<div class="empty-state">Loading...</div>' : !prospects.length ? `<div class="empty-state">${searchQuery ? 'No matches.' : 'No prospects saved yet.'}</div>` : prospects.map(x => `<div class="prospect-item" data-id="${x.id}"><div class="prospect-info"><div class="prospect-name">${esc(x.restaurant_name)}</div><div class="prospect-address">${esc(x.address_normalized || x.address_input)}</div></div><div class="prospect-actions-row">${x.dropped_off ? '<span class="badge badge-dropped">Dropped</span>' : ''}<button class="btn btn-small btn-secondary pl-view" data-id="${x.id}">View</button><button class="btn btn-small btn-status ${x.dropped_off ? 'dropped' : 'pending'} pl-toggle" data-id="${x.id}" data-dr="${x.dropped_off}">${x.dropped_off ? '✓' : 'Drop'}</button></div></div>`).join('')}</div>`;
   document.getElementById('btn-pl-add')?.addEventListener('click', () => { resetAdd(); panelView = 'panel-add'; renderPanel(); });
   document.getElementById('btn-pl-arch')?.addEventListener('click', () => { panelView = 'panel-archived'; renderPanel(); });
+  document.getElementById('btn-clear-route')?.addEventListener('click', clearRoute);
+  p.querySelectorAll('.route-up').forEach(b => b.addEventListener('click', () => moveRouteItem(parseInt(b.getAttribute('data-idx')!), -1)));
+  p.querySelectorAll('.route-dn').forEach(b => b.addEventListener('click', () => moveRouteItem(parseInt(b.getAttribute('data-idx')!), 1)));
+  p.querySelectorAll('.route-rm').forEach(b => b.addEventListener('click', (e) => { e.stopPropagation(); removeFromRoute(b.getAttribute('data-id')!); renderPanel(); }));
   p.querySelectorAll('.prospect-item').forEach(el => el.addEventListener('click', () => { const id = el.getAttribute('data-id'); if (id) { selectedProspectId = id; panelView = 'panel-detail'; renderPanel(); } }));
   p.querySelectorAll('.pl-view').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); const id = b.getAttribute('data-id'); if (id) { selectedProspectId = id; panelView = 'panel-detail'; renderPanel(); } }));
   p.querySelectorAll('.pl-toggle').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); handleToggleDropped(b.getAttribute('data-id')!, b.getAttribute('data-dr') === 'true'); }));
@@ -404,10 +490,11 @@ function rDetail(p: HTMLElement) {
     <div class="detail-section"><div class="detail-label">Created</div><div class="detail-value detail-muted">${new Date(x.created_at).toLocaleString()}</div></div></div>
     <div class="card"><div class="detail-actions">
     <button class="btn btn-secondary btn-full" id="btn-dt-fly">📍 Show on Map</button>
-    ${!x.archived ? `<button class="btn btn-status ${x.dropped_off ? 'dropped' : 'pending'} btn-full" id="btn-dt-tog">${x.dropped_off ? '✓ Dropped Off — Undo' : 'Mark Dropped Off'}</button><button class="btn btn-secondary btn-full" id="btn-dt-ed">✏️ Edit</button><button class="btn btn-secondary btn-full" id="btn-dt-arch">📦 Archive</button>` : '<button class="btn btn-primary btn-full" id="btn-dt-rest">↩️ Restore</button>'}
+    ${!x.archived ? `<button class="btn ${isInRoute(x.id) ? 'btn-danger' : 'btn-primary'} btn-full" id="btn-dt-route">${isInRoute(x.id) ? 'Remove from Route' : '+ Add to Route'}</button><button class="btn btn-status ${x.dropped_off ? 'dropped' : 'pending'} btn-full" id="btn-dt-tog">${x.dropped_off ? '✓ Dropped Off — Undo' : 'Mark Dropped Off'}</button><button class="btn btn-secondary btn-full" id="btn-dt-ed">✏️ Edit</button><button class="btn btn-secondary btn-full" id="btn-dt-arch">📦 Archive</button>` : '<button class="btn btn-primary btn-full" id="btn-dt-rest">↩️ Restore</button>'}
     <button class="btn btn-danger btn-full" id="btn-dt-del">🗑️ Delete Permanently</button></div></div>`;
   document.getElementById('btn-bk-dt')?.addEventListener('click', () => { selectedProspectId = null; panelView = 'panel-list'; renderPanel(); });
   document.getElementById('btn-dt-fly')?.addEventListener('click', () => flyTo(x));
+  document.getElementById('btn-dt-route')?.addEventListener('click', () => { toggleRouteSelection(x.id); renderPanel(); });
   document.getElementById('btn-dt-tog')?.addEventListener('click', () => handleToggleDropped(x.id, x.dropped_off));
   document.getElementById('btn-dt-ed')?.addEventListener('click', () => startEdit(x));
   document.getElementById('btn-dt-arch')?.addEventListener('click', () => handleArchive(x.id));
@@ -463,4 +550,5 @@ function esc(s: string): string { return s.replace(/&/g, '&amp;').replace(/</g, 
 
 // ─── Bootstrap ─────────────────────────────────────────
 setupShell();
+routeIds = loadRoute();
 loadData();
