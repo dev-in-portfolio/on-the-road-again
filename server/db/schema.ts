@@ -1,4 +1,4 @@
-import { Client } from '@libsql/client';
+import { Client } from '@libsql/client/http';
 
 export async function ensureSchema(db: Client): Promise<void> {
   await db.execute(`
