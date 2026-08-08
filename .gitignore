@@ -1,5 +1,23 @@
+# Dependencies
+node_modules/
+
+# Production build output
+dist/
+
+# Netlify local workspace & dev artifacts
+.netlify/
+
+# Environment secrets
+.env
+.env.local
+.env.*.local
+.env.development
+.env.production
+
+# Allow env example
+!.env.example
+
+# OS / Editor logs
 .DS_Store
 Thumbs.db
-node_modules/
-.env
 *.log

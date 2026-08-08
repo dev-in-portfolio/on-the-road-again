@@ -1,122 +1,17 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="On The Road Again - Interactive Travel & Road Trip Command Center & Scratchpad">
-    <title>On The Road Again | Trip Command Center</title>
-    <!-- Google Fonts -->
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="styles.css">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="description" content="On The Road Again - Field Sales Prospecting Tool" />
+  <title>On The Road Again</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/src/style.css" />
 </head>
 <body>
-    <div class="background-overlay"></div>
-
-    <!-- Navigation Header -->
-    <header class="navbar">
-        <div class="nav-brand">
-            <span class="brand-icon">🚗💨</span>
-            <span class="brand-name">ON THE ROAD AGAIN</span>
-        </div>
-        <div class="nav-status">
-            <span class="status-badge live-pulse">READY FOR JOURNEY</span>
-            <span id="current-time-display" class="time-display">00:00:00 AM</span>
-        </div>
-    </header>
-
-    <!-- Main Workspace -->
-    <main class="main-container">
-        <!-- Hero Banner -->
-        <section class="hero-card">
-            <div class="hero-content">
-                <span class="subheading">TEMP WORKSPACE & ROAD TRIP DASHBOARD</span>
-                <h1 id="main-title">On The Road Again</h1>
-                <p class="hero-desc">Your temporary staging pad for notes, route ideas, dev tasks, and adventure planning.</p>
-                <div class="quick-stats">
-                    <div class="stat-pill">
-                        <span class="stat-label">Milestone</span>
-                        <span class="stat-value" id="stat-waypoints">0 Stops</span>
-                    </div>
-                    <div class="stat-pill">
-                        <span class="stat-label">Quick Notes</span>
-                        <span class="stat-value" id="stat-notes">0 Saved</span>
-                    </div>
-                    <div class="stat-pill">
-                        <span class="stat-label">Coordinates</span>
-                        <span class="stat-value" id="stat-coords">37.7749° N, 122.4194° W</span>
-                    </div>
-                </div>
-            </div>
-        </section>
-
-        <!-- Dashboard Grid -->
-        <div class="dashboard-grid">
-            
-            <!-- Quick Scratchpad Section -->
-            <section class="card glass-card scratchpad-card">
-                <div class="card-header">
-                    <h2><span class="icon">📝</span> Developer Scratchpad</h2>
-                    <span class="autosave-tag" id="autosave-status">Saved to local storage</span>
-                </div>
-                <div class="card-body">
-                    <textarea id="scratchpad-input" placeholder="Type temporary notes, code snippets, links, or ideas here... Auto-saves as you type!"></textarea>
-                    <div class="action-bar">
-                        <button id="clear-scratchpad-btn" class="btn btn-secondary">Clear Text</button>
-                        <button id="copy-scratchpad-btn" class="btn btn-primary">Copy Notes</button>
-                    </div>
-                </div>
-            </section>
-
-            <!-- Interactive Route & Checkpoint Tracker -->
-            <section class="card glass-card route-card">
-                <div class="card-header">
-                    <h2><span class="icon">🗺️</span> Route Checkpoints</h2>
-                    <span class="badge">Interactive</span>
-                </div>
-                <div class="card-body">
-                    <form id="add-checkpoint-form" class="checkpoint-form">
-                        <input type="text" id="checkpoint-name-input" placeholder="Add stop e.g. Pacific Coast Highway..." required>
-                        <button type="submit" class="btn btn-accent">+ Add Stop</button>
-                    </form>
-                    <ul id="checkpoint-list" class="checkpoint-list">
-                        <!-- Items rendered via JS -->
-                    </ul>
-                </div>
-            </section>
-
-            <!-- Quick Tools & Sound Engine Simulator -->
-            <section class="card glass-card tools-card">
-                <div class="card-header">
-                    <h2><span class="icon">⚡</span> Quick Utilities</h2>
-                </div>
-                <div class="card-body tools-body">
-                    <div class="tool-item">
-                        <label>Ambient Highway Vibe</label>
-                        <div class="vibe-controls">
-                            <button id="vibe-rain-btn" class="vibe-btn">🌧️ Highway Rain</button>
-                            <button id="vibe-lofi-btn" class="vibe-btn">🎵 Synth Sunset</button>
-                        </div>
-                    </div>
-                    <div class="tool-item">
-                        <label>Color Accent Generator</label>
-                        <button id="random-theme-btn" class="btn btn-outline">🎨 Shift Gradient Theme</button>
-                    </div>
-                    <div class="tool-item info-box">
-                        <p><strong>Repo Info:</strong> Initialized with Git & Pushed to GitHub repo <code>on-the-road-again</code>.</p>
-                    </div>
-                </div>
-            </section>
-
-        </div>
-    </main>
-
-    <!-- Footer -->
-    <footer class="footer">
-        <p>Build with ❤️ for <strong>On The Road Again</strong> • Ready for custom development</p>
-    </footer>
-
-    <script src="app.js"></script>
+  <div id="app"></div>
+  <script type="module" src="/src/main.ts"></script>
 </body>
 </html>
