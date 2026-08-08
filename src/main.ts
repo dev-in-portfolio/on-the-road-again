@@ -54,7 +54,7 @@ function createMap() {
     center: DEFAULT_CENTER, zoom: DEFAULT_ZOOM, attributionControl: false,
   });
   map.addControl(new maplibregl.AttributionControl({ compact: true }), 'bottom-right');
-  map.on('load', () => refreshMarkers());
+  map.on('load', () => { refreshMarkers(); fitMap(); });
 }
 
 function fitMap() {
@@ -81,15 +81,21 @@ function mkEl(p: Prospect): HTMLElement {
 function refreshMarkers() {
   if (!map) return;
   const ids = new Set(prospects.map(p => p.id));
+  // Remove markers for prospects no longer present
   for (const [id, m] of markers) { if (!ids.has(id)) { m.remove(); markers.delete(id); } }
   for (const p of prospects) {
     if (p.latitude == null || p.longitude == null) continue;
     const ex = markers.get(p.id);
     if (ex) {
-      const nel = mkEl(p);
-      const old = ex.getElement();
-      nel.addEventListener('click', () => openPopup(p, ex));
-      if (old.parentNode) old.parentNode.replaceChild(nel, old);
+      // Mutate existing marker element in-place (don't replaceChild — breaks MapLibre ownership)
+      const el = ex.getElement();
+      el.className = `map-marker ${p.dropped_off ? 'marker-dropped' : 'marker-active'}`;
+      el.setAttribute('aria-label', `${p.restaurant_name}${p.dropped_off ? ' — Dropped Off' : ''}`);
+      el.innerHTML = p.dropped_off
+        ? `<svg width="30" height="40" viewBox="0 0 30 40"><path d="M15 1C7.3 1 1 7.3 1 15c0 10 14 24 14 24s14-14 14-24C29 7.3 22.7 1 15 1z" fill="#10b981" stroke="#047857" stroke-width="1.5"/><text x="15" y="19" text-anchor="middle" fill="white" font-size="15" font-weight="bold">✓</text></svg>`
+        : `<svg width="30" height="40" viewBox="0 0 30 40"><path d="M15 1C7.3 1 1 7.3 1 15c0 10 14 24 14 24s14-14 14-24C29 7.3 22.7 1 15 1z" fill="#2563eb" stroke="#1e40af" stroke-width="1.5"/><circle cx="15" cy="13" r="6" fill="white"/></svg>`;
+      // Move marker if coordinates changed (ISSUE 1 fix)
+      ex.setLngLat([p.longitude, p.latitude]);
     } else {
       const nel = mkEl(p);
       const mk = new maplibregl.Marker({ element: nel, anchor: 'bottom' }).setLngLat([p.longitude, p.latitude]).addTo(map!);
@@ -97,7 +103,8 @@ function refreshMarkers() {
       markers.set(p.id, mk);
     }
   }
-  fitMap();
+  // NOTE: fitMap() intentionally NOT called here (ISSUE 3 fix).
+  // Call fitMap() explicitly only on initial load or explicit user action.
 }
 
 function openPopup(p: Prospect, mk: maplibregl.Marker) {
@@ -171,6 +178,8 @@ async function loadData() {
 }
 
 // ─── Autocomplete ──────────────────────────────────────
+let acSeq = 0; // monotonically increasing sequence to reject stale responses
+
 function triggerAc(
   text: string,
   setSug: (s: AutocompleteSuggestion[]) => void, setVis: (v: boolean) => void,
@@ -178,12 +187,29 @@ function triggerAc(
   timer: ReturnType<typeof setTimeout> | null, setTimer: (t: ReturnType<typeof setTimeout> | null) => void,
   rebuild: () => void,
 ) {
+  // Cancel any pending timer and in-flight request IMMEDIATELY (ISSUE 4 fix)
   if (timer) clearTimeout(timer);
+  if (abort) abort.abort();
+  setAbort(null);
+  setTimer(null);
+
   if (text.trim().length < 2) { setSug([]); setVis(false); return; }
+
+  const seq = ++acSeq; // capture current sequence number
+  const query = text.trim();
+
   const t = setTimeout(async () => {
-    if (abort) abort.abort();
     const ctrl = new AbortController(); setAbort(ctrl);
-    try { const r = await geocodeAutocomplete(text.trim(), ctrl.signal); setSug(r); setVis(r.length > 0); } catch { setSug([]); setVis(false); }
+    try {
+      const r = await geocodeAutocomplete(query, ctrl.signal);
+      // Only accept result if no newer input has arrived (ISSUE 4 guard)
+      if (seq !== acSeq) return;
+      setSug(r); setVis(r.length > 0);
+    } catch {
+      // Silently ignore aborted/failed — only if still current
+      if (seq !== acSeq) return;
+      setSug([]); setVis(false);
+    }
     rebuild();
   }, 300);
   setTimer(t);
