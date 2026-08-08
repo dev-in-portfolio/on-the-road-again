@@ -84,6 +84,45 @@ function clearRoute() {
   refreshMarkers();
 }
 
+// ─── Google Maps Handoff ───────────────────────────────
+
+function buildGoogleMapsUrl(): string | { error: string } {
+  const items = routeIds.map(id => getById(id)).filter(Boolean) as Prospect[];
+  if (items.length === 0) return { error: 'No stops selected.' };
+
+  // Validate all stops have coordinates
+  const invalid = items.filter(p => p.latitude == null || p.longitude == null);
+  if (invalid.length > 0) {
+    return { error: `${invalid[0].restaurant_name} needs a valid mapped address before this route can be sent.` };
+  }
+
+  // Separate waypoints and destination
+  const dest = items[items.length - 1];
+  const waypoints = items.slice(0, -1);
+
+  // Build URL with coordinates
+  const wpStr = waypoints.map(p => `${p.latitude},${p.longitude}`).join('|');
+  let url = `https://www.google.com/maps/dir/?api=1&travelmode=driving`;
+  if (wpStr) url += `&waypoints=${encodeURIComponent(wpStr)}`;
+  url += `&destination=${encodeURIComponent(`${dest.latitude},${dest.longitude}`)}`;
+
+  // URL length check (safe limit for browsers ~2000 chars; coords should keep us well under)
+  if (url.length > 2000) return { error: 'Route URL is too long. This is unexpected with coordinate-based stops.' };
+
+  return url;
+}
+
+function handleSendToGoogleMaps() {
+  const result = buildGoogleMapsUrl();
+  if (typeof result === 'object' && 'error' in result) {
+    errorMessage = result.error;
+    renderPanel();
+    return;
+  }
+  // Open in new tab/window — on mobile this typically opens Google Maps app
+  window.open(result as string, '_blank', 'noopener');
+}
+
 // ─── Map ───────────────────────────────────────────────
 let map: maplibregl.Map | null = null;
 let markers: Map<string, maplibregl.Marker> = new Map();
@@ -428,11 +467,13 @@ function rList(p: HTMLElement) {
         </div>
       </div>`).join('')}</div>
       <button class="btn btn-secondary btn-full" id="btn-clear-route">Clear Route</button>
+      <button class="btn btn-primary btn-full" id="btn-send-gmaps">🚀 Send ${routeItems.length} Stop${routeItems.length !== 1 ? 's' : ''} to Google Maps</button>
     </div>` : ''}
     <div class="prospect-list">${loading ? '<div class="empty-state">Loading...</div>' : !prospects.length ? `<div class="empty-state">${searchQuery ? 'No matches.' : 'No prospects saved yet.'}</div>` : prospects.map(x => `<div class="prospect-item" data-id="${x.id}"><div class="prospect-info"><div class="prospect-name">${esc(x.restaurant_name)}</div><div class="prospect-address">${esc(x.address_normalized || x.address_input)}</div></div><div class="prospect-actions-row">${x.dropped_off ? '<span class="badge badge-dropped">Dropped</span>' : ''}<button class="btn btn-small btn-secondary pl-view" data-id="${x.id}">View</button><button class="btn btn-small btn-status ${x.dropped_off ? 'dropped' : 'pending'} pl-toggle" data-id="${x.id}" data-dr="${x.dropped_off}">${x.dropped_off ? '✓' : 'Drop'}</button></div></div>`).join('')}</div>`;
   document.getElementById('btn-pl-add')?.addEventListener('click', () => { resetAdd(); panelView = 'panel-add'; renderPanel(); });
   document.getElementById('btn-pl-arch')?.addEventListener('click', () => { panelView = 'panel-archived'; renderPanel(); });
   document.getElementById('btn-clear-route')?.addEventListener('click', clearRoute);
+  document.getElementById('btn-send-gmaps')?.addEventListener('click', handleSendToGoogleMaps);
   p.querySelectorAll('.route-up').forEach(b => b.addEventListener('click', () => moveRouteItem(parseInt(b.getAttribute('data-idx')!), -1)));
   p.querySelectorAll('.route-dn').forEach(b => b.addEventListener('click', () => moveRouteItem(parseInt(b.getAttribute('data-idx')!), 1)));
   p.querySelectorAll('.route-rm').forEach(b => b.addEventListener('click', (e) => { e.stopPropagation(); removeFromRoute(b.getAttribute('data-id')!); renderPanel(); }));

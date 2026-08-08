@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <rect fill="#0f172a" width="512" height="512" rx="64"/>
+  <text x="256" y="240" text-anchor="middle" fill="#2563eb" font-size="64" font-family="sans-serif" font-weight="bold">🚗</text>
+  <text x="256" y="340" text-anchor="middle" fill="#f8fafc" font-size="36" font-family="sans-serif" font-weight="600">ON THE</text>
+  <text x="256" y="388" text-anchor="middle" fill="#f8fafc" font-size="36" font-family="sans-serif" font-weight="600">ROAD AGAIN</text>
+</svg>
