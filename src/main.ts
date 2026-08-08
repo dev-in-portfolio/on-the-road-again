@@ -1,1159 +1,440 @@
+import * as maplibregl from 'maplibre-gl';
 import {
-  fetchProspects,
-  createProspect,
-  updateProspect,
-  toggleDroppedOff,
-  archiveProspect,
-  restoreProspect,
-  deleteProspect,
-  geocodeAutocomplete,
-  geocodeSearch,
+  fetchProspects, createProspect, updateProspect,
+  toggleDroppedOff, archiveProspect, restoreProspect, deleteProspect,
+  geocodeAutocomplete, geocodeSearch,
 } from './api/client';
-import {
-  Prospect,
-  AutocompleteSuggestion,
-  CreateProspectInput,
-} from './types/prospect';
+import { Prospect, AutocompleteSuggestion, CreateProspectInput } from './types/prospect';
 
-// ─── State ──────────────────────────────────────────────
-const appEl = document.getElementById('app')!;
+// ─── Constants ─────────────────────────────────────────
+const DEFAULT_CENTER: [number, number] = [-95.7129, 37.0902];
+const DEFAULT_ZOOM = 3.5;
+const SINGLE_ZOOM = 15;
 
+// ─── State ─────────────────────────────────────────────
 let prospects: Prospect[] = [];
-let archivedProspects: Prospect[] = [];
 let loading = true;
 let errorMessage: string | null = null;
 let submitting = false;
 
-// View routing
-type View =
-  | 'list'
-  | 'add'
-  | 'detail'
-  | 'edit'
-  | 'archived';
-let view: View = 'list';
+type View = 'panel-list' | 'panel-add' | 'panel-detail' | 'panel-edit' | 'panel-archived';
+let panelView: View = 'panel-list';
 let selectedProspectId: string | null = null;
 let searchQuery = '';
 
-// Add-prospect flow state
 let addStep: 'entry' | 'confirm' | 'duplicate' = 'entry';
-let addName = '';
-let addAddress = '';
-let addNormalized = '';
-let addLat: number | null = null;
-let addLon: number | null = null;
-let addPlaceId = '';
-let addDuplicates: Prospect[] = [];
-let addAddressSelected = false;
+let addName = '', addAddress = '', addNormalized = '';
+let addLat: number | null = null, addLon: number | null = null, addPlaceId = '';
+let addDuplicates: Prospect[] = [], addAddressSelected = false;
 
-// Autocomplete state
-let autocompleteSuggestions: AutocompleteSuggestion[] = [];
-let autocompleteVisible = false;
-let autocompleteAbort: AbortController | null = null;
-let autocompleteDebounce: ReturnType<typeof setTimeout> | null = null;
+let acSug: AutocompleteSuggestion[] = [], acVis = false;
+let acAbort: AbortController | null = null, acTimer: ReturnType<typeof setTimeout> | null = null;
 
-// Edit state
-let editName = '';
-let editAddress = '';
-let editNormalized = '';
-let editLat: number | null = null;
-let editLon: number | null = null;
-let editPlaceId = '';
-let editDuplicates: Prospect[] = [];
-let editStep: 'entry' | 'confirm' | 'duplicate' = 'entry';
-let editAutocompleteSuggestions: AutocompleteSuggestion[] = [];
-let editAutocompleteVisible = false;
-let editAutocompleteAbort: AbortController | null = null;
-let editAutocompleteDebounce: ReturnType<typeof setTimeout> | null = null;
+let edName = '', edAddr = '', edNorm = '';
+let edLat: number | null = null, edLon: number | null = null, edPid = '';
+let edDups: Prospect[] = [];
+let edStep: 'entry' | 'confirm' | 'duplicate' = 'entry';
+let edAcSug: AutocompleteSuggestion[] = [], edAcVis = false;
+let edAcAbort: AbortController | null = null, edAcTimer: ReturnType<typeof setTimeout> | null = null;
 
-// ─── Data Loading ──────────────────────────────────────
-async function loadData() {
-  loading = true;
-  errorMessage = null;
-  render();
+// ─── Map ───────────────────────────────────────────────
+let map: maplibregl.Map | null = null;
+let markers: Map<string, maplibregl.Marker> = new Map();
+let mapPopup: maplibregl.Popup | null = null;
 
-  try {
-    prospects = await fetchProspects(searchQuery || undefined, false);
-    archivedProspects = await fetchProspects(undefined, true);
-  } catch (err: unknown) {
-    errorMessage = err instanceof Error ? err.message : 'Failed to load prospects.';
-  } finally {
-    loading = false;
-    render();
+function createMap() {
+  if (map) return;
+  map = new maplibregl.Map({
+    container: 'map-container',
+    style: {
+      version: 8,
+      sources: { 'osm': { type: 'raster', tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'], tileSize: 256, attribution: '&copy; OpenStreetMap' } },
+      layers: [{ id: 'osm-layer', type: 'raster', source: 'osm' }],
+    },
+    center: DEFAULT_CENTER, zoom: DEFAULT_ZOOM, attributionControl: false,
+  });
+  map.addControl(new maplibregl.AttributionControl({ compact: true }), 'bottom-right');
+  map.on('load', () => refreshMarkers());
+}
+
+function fitMap() {
+  if (!map) return;
+  const v = prospects.filter(p => p.latitude != null && p.longitude != null);
+  if (!v.length) { map.flyTo({ center: DEFAULT_CENTER, zoom: DEFAULT_ZOOM }); return; }
+  if (v.length === 1) { map.flyTo({ center: [v[0].longitude!, v[0].latitude!], zoom: SINGLE_ZOOM }); return; }
+  const b = new maplibregl.LngLatBounds();
+  for (const p of v) b.extend([p.longitude!, p.latitude!]);
+  map.fitBounds(b, { padding: 60, maxZoom: 14 });
+}
+
+function mkEl(p: Prospect): HTMLElement {
+  const el = document.createElement('div');
+  el.className = `map-marker ${p.dropped_off ? 'marker-dropped' : 'marker-active'}`;
+  el.setAttribute('aria-label', `${p.restaurant_name}${p.dropped_off ? ' — Dropped Off' : ''}`);
+  el.innerHTML = p.dropped_off
+    ? `<svg width="30" height="40" viewBox="0 0 30 40"><path d="M15 1C7.3 1 1 7.3 1 15c0 10 14 24 14 24s14-14 14-24C29 7.3 22.7 1 15 1z" fill="#10b981" stroke="#047857" stroke-width="1.5"/><text x="15" y="19" text-anchor="middle" fill="white" font-size="15" font-weight="bold">✓</text></svg>`
+    : `<svg width="30" height="40" viewBox="0 0 30 40"><path d="M15 1C7.3 1 1 7.3 1 15c0 10 14 24 14 24s14-14 14-24C29 7.3 22.7 1 15 1z" fill="#2563eb" stroke="#1e40af" stroke-width="1.5"/><circle cx="15" cy="13" r="6" fill="white"/></svg>`;
+  el.style.cursor = 'pointer';
+  return el;
+}
+
+function refreshMarkers() {
+  if (!map) return;
+  const ids = new Set(prospects.map(p => p.id));
+  for (const [id, m] of markers) { if (!ids.has(id)) { m.remove(); markers.delete(id); } }
+  for (const p of prospects) {
+    if (p.latitude == null || p.longitude == null) continue;
+    const ex = markers.get(p.id);
+    if (ex) {
+      const nel = mkEl(p);
+      const old = ex.getElement();
+      nel.addEventListener('click', () => openPopup(p, ex));
+      if (old.parentNode) old.parentNode.replaceChild(nel, old);
+    } else {
+      const nel = mkEl(p);
+      const mk = new maplibregl.Marker({ element: nel, anchor: 'bottom' }).setLngLat([p.longitude, p.latitude]).addTo(map!);
+      nel.addEventListener('click', () => openPopup(p, mk));
+      markers.set(p.id, mk);
+    }
   }
+  fitMap();
+}
+
+function openPopup(p: Prospect, mk: maplibregl.Marker) {
+  if (!map) return;
+  if (mapPopup) mapPopup.remove();
+  const a = p.address_normalized || p.address_input;
+  const html = `<div class="map-popup">
+    <div class="popup-name">${esc(p.restaurant_name)}</div>
+    <div class="popup-addr">${esc(a)}</div>
+    <div class="${p.dropped_off ? 'popup-dropped' : 'popup-pending'}">${p.dropped_off ? '✓ Dropped Off ' + (p.dropped_off_at ? new Date(p.dropped_off_at).toLocaleDateString() : '') : 'Not Dropped Off'}</div>
+    <div class="popup-actions">
+      <button class="popup-btn popup-btn-primary" data-act="pop-view" data-id="${p.id}">View</button>
+      <button class="popup-btn ${p.dropped_off ? 'popup-btn-dropped' : 'popup-btn-pending'}" data-act="pop-toggle" data-id="${p.id}" data-dr="${p.dropped_off}">${p.dropped_off ? 'Undo' : 'Mark Dropped Off'}</button>
+    </div></div>`;
+  mapPopup = new maplibregl.Popup({ offset: [0, -32], closeButton: true, maxWidth: '280px' }).setLngLat(mk.getLngLat()).setHTML(html).addTo(map);
+  mapPopup.on('open', () => {
+    document.querySelector('[data-act="pop-view"]')?.addEventListener('click', (e) => { const id = (e.target as HTMLElement).getAttribute('data-id'); if (id) { selectedProspectId = id; panelView = 'panel-detail'; renderPanel(); } });
+    document.querySelector('[data-act="pop-toggle"]')?.addEventListener('click', (e) => { const id = (e.target as HTMLElement).getAttribute('data-id'); const dr = (e.target as HTMLElement).getAttribute('data-dr') === 'true'; if (id) mapToggleDropped(id, dr); });
+  });
+}
+
+async function mapToggleDropped(id: string, cur: boolean) {
+  try { const u = await toggleDroppedOff(id, cur); prospects = prospects.map(p => p.id === id ? u : p); refreshMarkers(); if (panelView === 'panel-detail' && selectedProspectId === id) renderPanel(); } catch (e: unknown) { errorMessage = e instanceof Error ? e.message : 'Failed'; renderPanel(); }
+}
+
+function flyTo(p: Prospect) {
+  if (!map || p.latitude == null || p.longitude == null) return;
+  map.flyTo({ center: [p.longitude, p.latitude], zoom: SINGLE_ZOOM });
+  const m = markers.get(p.id);
+  if (m) setTimeout(() => openPopup(p, m), 600);
+}
+
+function handleLocate() {
+  if (!navigator.geolocation) return;
+  navigator.geolocation.getCurrentPosition(pos => { if (map) map.flyTo({ center: [pos.coords.longitude, pos.coords.latitude], zoom: 14 }); }, () => {}, { timeout: 5000, enableHighAccuracy: false });
+}
+
+// ─── Shell ─────────────────────────────────────────────
+function setupShell() {
+  const app = document.getElementById('app')!;
+  app.innerHTML = `<div id="map-container"></div><div id="top-bar"><div id="search-bar"></div></div><div id="panel-container"></div>`;
+  createMap();
+  setupMapControls();
+  renderPanel();
+  updateSearchBar();
+}
+
+function setupMapControls() {
+  const mc = document.getElementById('map-container');
+  if (!mc) return;
+  const div = document.createElement('div'); div.id = 'map-controls';
+  div.innerHTML = `<button class="map-ctrl-btn" id="btn-locate" title="Locate Me" aria-label="Locate Me">📍</button><button class="map-ctrl-btn" id="btn-map-add" title="Add Prospect" aria-label="Add Prospect">＋</button>`;
+  mc.appendChild(div);
+  document.getElementById('btn-locate')?.addEventListener('click', handleLocate);
+  document.getElementById('btn-map-add')?.addEventListener('click', () => { resetAdd(); panelView = 'panel-add'; renderPanel(); });
+}
+
+function updateSearchBar() {
+  const sb = document.getElementById('search-bar'); if (!sb) return;
+  sb.innerHTML = `<input type="search" id="shell-search" class="form-input search-input" placeholder="Search prospects..." autocomplete="off" value="${esc(searchQuery)}">${searchQuery ? '<button class="btn btn-small btn-secondary" id="shell-clear">✕</button>' : ''}`;
+  document.getElementById('shell-search')?.addEventListener('input', e => { searchQuery = (e.target as HTMLInputElement).value; loadData(); });
+  document.getElementById('shell-clear')?.addEventListener('click', () => { searchQuery = ''; loadData(); });
+}
+
+// ─── Data ──────────────────────────────────────────────
+async function loadData() {
+  loading = true; errorMessage = null; renderPanel();
+  try { prospects = await fetchProspects(searchQuery || undefined, false); }
+  catch (e: unknown) { errorMessage = e instanceof Error ? e.message : 'Failed to load.'; }
+  finally { loading = false; refreshMarkers(); renderPanel(); }
 }
 
 // ─── Autocomplete ──────────────────────────────────────
-function triggerAutocomplete(
+function triggerAc(
   text: string,
-  setter: (s: AutocompleteSuggestion[]) => void,
-  setVisible: (v: boolean) => void,
-  abortRef: { current: AbortController | null },
-  debounceRef: { current: ReturnType<typeof setTimeout> | null }
+  setSug: (s: AutocompleteSuggestion[]) => void, setVis: (v: boolean) => void,
+  abort: AbortController | null, setAbort: (a: AbortController | null) => void,
+  timer: ReturnType<typeof setTimeout> | null, setTimer: (t: ReturnType<typeof setTimeout> | null) => void,
+  rebuild: () => void,
 ) {
-  if (debounceRef.current) clearTimeout(debounceRef.current);
-  if (text.trim().length < 2) {
-    setter([]);
-    setVisible(false);
-    return;
-  }
-
-  debounceRef.current = setTimeout(async () => {
-    if (abortRef.current) abortRef.current.abort();
-    const controller = new AbortController();
-    abortRef.current = controller;
-
-    try {
-      const results = await geocodeAutocomplete(text.trim(), controller.signal);
-      setter(results);
-      setVisible(results.length > 0);
-    } catch {
-      // Silently ignore aborted or failed autocomplete
-      setter([]);
-      setVisible(false);
-    }
+  if (timer) clearTimeout(timer);
+  if (text.trim().length < 2) { setSug([]); setVis(false); return; }
+  const t = setTimeout(async () => {
+    if (abort) abort.abort();
+    const ctrl = new AbortController(); setAbort(ctrl);
+    try { const r = await geocodeAutocomplete(text.trim(), ctrl.signal); setSug(r); setVis(r.length > 0); } catch { setSug([]); setVis(false); }
+    rebuild();
   }, 300);
+  setTimer(t);
 }
 
-function selectSuggestion(s: AutocompleteSuggestion) {
-  addAddress = s.formatted;
-  addNormalized = s.formatted;
-  addLat = s.lat;
-  addLon = s.lon;
-  addPlaceId = s.placeId;
-  addAddressSelected = true;
-  autocompleteSuggestions = [];
-  autocompleteVisible = false;
-  addStep = 'confirm';
-  render();
+function updateAcDropdown(wrapper: HTMLElement, sug: AutocompleteSuggestion[], vis: boolean, onSel: (s: AutocompleteSuggestion) => void) {
+  const old = wrapper.querySelector('.autocomplete-dropdown'); if (old) old.remove();
+  if (!vis || !sug.length) return;
+  const dd = document.createElement('div'); dd.className = 'autocomplete-dropdown';
+  sug.forEach(s => {
+    const b = document.createElement('button'); b.type = 'button'; b.className = 'autocomplete-item';
+    b.innerHTML = `<span class="autocomplete-label">${esc(s.formatted)}</span>`;
+    b.addEventListener('mousedown', e => { e.preventDefault(); onSel(s); });
+    dd.appendChild(b);
+  });
+  wrapper.appendChild(dd);
 }
 
-function selectEditSuggestion(s: AutocompleteSuggestion) {
-  editAddress = s.formatted;
-  editNormalized = s.formatted;
-  editLat = s.lat;
-  editLon = s.lon;
-  editPlaceId = s.placeId;
-  editAutocompleteSuggestions = [];
-  editAutocompleteVisible = false;
-  editStep = 'confirm';
-  render();
-}
+function selAddSug(s: AutocompleteSuggestion) { addAddress = s.formatted; addNormalized = s.formatted; addLat = s.lat; addLon = s.lon; addPlaceId = s.placeId; addAddressSelected = true; acSug = []; acVis = false; addStep = 'confirm'; renderPanel(); }
+function selEdSug(s: AutocompleteSuggestion) { edAddr = s.formatted; edNorm = s.formatted; edLat = s.lat; edLon = s.lon; edPid = s.placeId; edAcSug = []; edAcVis = false; edStep = 'confirm'; renderPanel(); }
 
-// ─── Add Prospect Flow ─────────────────────────────────
-async function handleAddProspect(e: SubmitEvent) {
+// ─── Add ───────────────────────────────────────────────
+async function handleAddSubmit(e: SubmitEvent) {
   e.preventDefault();
-  const form = e.target as HTMLFormElement;
-  const nameInput = form.querySelector('#restaurant_name') as HTMLInputElement;
-  const addressInput = form.querySelector('#address_input') as HTMLInputElement;
-
-  addName = nameInput.value.trim();
-  if (!addAddressSelected) {
-    addAddress = addressInput.value.trim();
-  }
-
-  if (!addName || !addAddress) return;
-
-  errorMessage = null;
-
-  // If address wasn't picked from autocomplete, try geocoding it
+  const f = e.target as HTMLFormElement;
+  addName = (f.querySelector('#restaurant_name') as HTMLInputElement).value.trim();
+  if (!addAddressSelected) addAddress = (f.querySelector('#address_input') as HTMLInputElement).value.trim();
+  if (!addName || !addAddress) return; errorMessage = null;
   if (!addAddressSelected && addAddress) {
-    submitting = true;
-    render();
-
+    submitting = true; renderPanel();
     try {
-      const result = await geocodeSearch(addAddress);
-      if (result.results.length > 0 && result.isPrecise) {
-        const best = result.best;
-        addNormalized = best.formatted;
-        addLat = best.lat;
-        addLon = best.lon;
-        addPlaceId = best.placeId;
-        addStep = 'confirm';
-        submitting = false;
-        render();
-        return;
-      } else if (result.results.length > 0 && !result.isPrecise) {
-        errorMessage =
-          "We couldn't confidently locate this address. The result may be too broad. Please enter a more specific street address.";
-        submitting = false;
-        render();
-        return;
-      } else {
-        errorMessage =
-          "We couldn't locate this address. Check the address and try again.";
-        submitting = false;
-        render();
-        return;
-      }
-    } catch (err: unknown) {
-      errorMessage =
-        err instanceof Error
-          ? err.message
-          : 'Address search is temporarily unavailable. Try again.';
-      submitting = false;
-      render();
-      return;
-    }
+      const r = await geocodeSearch(addAddress);
+      if (r.results.length > 0 && r.isPrecise) { addNormalized = r.best.formatted; addLat = r.best.lat; addLon = r.best.lon; addPlaceId = r.best.placeId; addStep = 'confirm'; submitting = false; renderPanel(); return; }
+      errorMessage = r.results.length > 0 ? "We couldn't confidently locate this address." : "We couldn't locate this address.";
+    } catch (er: unknown) { errorMessage = er instanceof Error ? er.message : 'Address search unavailable.'; }
+    submitting = false; renderPanel(); return;
   }
-
-  // If we got here with addStep !== 'confirm', go to confirm step
-  if (addAddressSelected && addStep !== 'confirm') {
-    addStep = 'confirm';
-    render();
-    return;
-  }
+  if (addAddressSelected && addStep !== 'confirm') { addStep = 'confirm'; renderPanel(); }
 }
 
-async function confirmAddProspect() {
-  submitting = true;
-  errorMessage = null;
-  render();
-
-  const input: CreateProspectInput = {
-    restaurant_name: addName,
-    address_input: addAddress,
-    address_normalized: addNormalized || null,
-    latitude: addLat,
-    longitude: addLon,
-    geocode_provider: addLat !== null ? 'Geoapify' : null,
-    geocode_reference: addPlaceId || null,
-  };
-
+async function confirmAdd() {
+  submitting = true; errorMessage = null; renderPanel();
+  const inp: CreateProspectInput = { restaurant_name: addName, address_input: addAddress, address_normalized: addNormalized || null, latitude: addLat, longitude: addLon, geocode_provider: addLat !== null ? 'Geoapify' : null, geocode_reference: addPlaceId || null };
   try {
-    const result = await createProspect(input);
-
-    if ('code' in result && result.code === 'DUPLICATE_DETECTED') {
-      addDuplicates = result.duplicates;
-      addStep = 'duplicate';
-      submitting = false;
-      render();
-      return;
-    }
-
-    // Success
-    const newProspect = result as Prospect;
-    prospects.unshift(newProspect);
-    resetAddState();
-    view = 'list';
-    submitting = false;
-    render();
-  } catch (err: unknown) {
-    errorMessage =
-      err instanceof Error ? err.message : "We couldn't save this prospect.";
-    submitting = false;
-    render();
-  }
+    const r = await createProspect(inp);
+    if ('code' in r && r.code === 'DUPLICATE_DETECTED') { addDuplicates = r.duplicates; addStep = 'duplicate'; submitting = false; renderPanel(); return; }
+    prospects.unshift(r as Prospect); resetAdd(); panelView = 'panel-list'; refreshMarkers(); submitting = false; renderPanel();
+  } catch (er: unknown) { errorMessage = er instanceof Error ? er.message : "Couldn't save."; submitting = false; renderPanel(); }
 }
 
-async function confirmAddDespiteDuplicate() {
-  submitting = true;
-  render();
-
-  const input: CreateProspectInput = {
-    restaurant_name: addName,
-    address_input: addAddress,
-    address_normalized: addNormalized || null,
-    latitude: addLat,
-    longitude: addLon,
-    geocode_provider: addLat !== null ? 'Geoapify' : null,
-    geocode_reference: addPlaceId || null,
-    skip_duplicate_check: true,
-  };
-
-  try {
-    const result = await createProspect(input);
-    const newProspect = result as Prospect;
-    prospects.unshift(newProspect);
-    resetAddState();
-    view = 'list';
-    submitting = false;
-    render();
-  } catch (err: unknown) {
-    errorMessage =
-      err instanceof Error ? err.message : "We couldn't save this prospect.";
-    submitting = false;
-    render();
-  }
+async function confirmAddDup() {
+  submitting = true; renderPanel();
+  const inp: CreateProspectInput = { restaurant_name: addName, address_input: addAddress, address_normalized: addNormalized || null, latitude: addLat, longitude: addLon, geocode_provider: addLat !== null ? 'Geoapify' : null, geocode_reference: addPlaceId || null, skip_duplicate_check: true };
+  try { prospects.unshift(await createProspect(inp) as Prospect); resetAdd(); panelView = 'panel-list'; refreshMarkers(); submitting = false; renderPanel(); }
+  catch (er: unknown) { errorMessage = er instanceof Error ? er.message : "Couldn't save."; submitting = false; renderPanel(); }
 }
 
-function resetAddState() {
-  addStep = 'entry';
-  addName = '';
-  addAddress = '';
-  addNormalized = '';
-  addLat = null;
-  addLon = null;
-  addPlaceId = '';
-  addDuplicates = [];
-  addAddressSelected = false;
-  autocompleteSuggestions = [];
-  autocompleteVisible = false;
-}
+function resetAdd() { addStep = 'entry'; addName = addAddress = addNormalized = ''; addLat = addLon = null; addPlaceId = ''; addDuplicates = []; addAddressSelected = false; acSug = []; acVis = false; }
 
-// ─── Edit Flow ─────────────────────────────────────────
-function startEdit(prospect: Prospect) {
-  editName = prospect.restaurant_name;
-  editAddress = prospect.address_input;
-  editNormalized = prospect.address_normalized || '';
-  editLat = prospect.latitude;
-  editLon = prospect.longitude;
-  editPlaceId = prospect.geocode_reference || '';
-  editDuplicates = [];
-  editStep = 'entry';
-  editAutocompleteSuggestions = [];
-  editAutocompleteVisible = false;
-  view = 'edit';
-  render();
+// ─── Edit ──────────────────────────────────────────────
+function startEdit(p: Prospect) {
+  edName = p.restaurant_name; edAddr = p.address_input; edNorm = p.address_normalized || '';
+  edLat = p.latitude; edLon = p.longitude; edPid = p.geocode_reference || '';
+  edDups = []; edStep = 'entry'; edAcSug = []; edAcVis = false;
+  panelView = 'panel-edit'; renderPanel();
 }
 
 async function handleEditSubmit(e: SubmitEvent) {
   e.preventDefault();
-  const form = e.target as HTMLFormElement;
-  const nameInput = form.querySelector('#edit_restaurant_name') as HTMLInputElement;
-  const addressInput = form.querySelector('#edit_address_input') as HTMLInputElement;
-
-  const newName = nameInput.value.trim();
-  const newAddress = addressInput.value.trim();
-
-  if (!newName || !newAddress || !selectedProspectId) return;
-
-  errorMessage = null;
-
-  // If address changed and hasn't been geocoded via autocomplete
-  const geoChanged = newAddress !== editAddress || editLat === null;
-  if (geoChanged && !editAutocompleteVisible && editStep === 'entry') {
-    submitting = true;
-    render();
-
+  const f = e.target as HTMLFormElement;
+  const n = (f.querySelector('#edit_restaurant_name') as HTMLInputElement).value.trim();
+  const a = (f.querySelector('#edit_address_input') as HTMLInputElement).value.trim();
+  if (!n || !a || !selectedProspectId) return; errorMessage = null;
+  const chg = a !== edAddr || edLat === null;
+  if (chg && !edAcVis && edStep === 'entry') {
+    submitting = true; renderPanel();
     try {
-      const result = await geocodeSearch(newAddress);
-      if (result.results.length > 0 && result.isPrecise) {
-        const best = result.best;
-        editName = newName;
-        editAddress = newAddress;
-        editNormalized = best.formatted;
-        editLat = best.lat;
-        editLon = best.lon;
-        editPlaceId = best.placeId;
-        editStep = 'confirm';
-        submitting = false;
-        render();
-        return;
-      } else if (result.results.length > 0 && !result.isPrecise) {
-        errorMessage = "The new address couldn't be precisely located. Try a more specific address.";
-        submitting = false;
-        render();
-        return;
-      } else {
-        errorMessage = "We couldn't locate the new address. Check and try again.";
-        submitting = false;
-        render();
-        return;
-      }
-    } catch (err: unknown) {
-      errorMessage =
-        err instanceof Error ? err.message : 'Address search is temporarily unavailable.';
-      submitting = false;
-      render();
-      return;
-    }
+      const r = await geocodeSearch(a);
+      if (r.results.length > 0 && r.isPrecise) { edName = n; edAddr = r.best.formatted; edNorm = r.best.formatted; edLat = r.best.lat; edLon = r.best.lon; edPid = r.best.placeId; edStep = 'confirm'; submitting = false; renderPanel(); return; }
+      errorMessage = r.results.length > 0 ? "Couldn't precisely locate the new address." : "Couldn't locate the new address.";
+    } catch (er: unknown) { errorMessage = er instanceof Error ? er.message : 'Address search unavailable.'; }
+    submitting = false; renderPanel(); return;
   }
-
-  editStep = 'confirm';
-  render();
-  return;
+  edStep = 'confirm'; renderPanel();
 }
 
-async function confirmEditProspect() {
-  if (!selectedProspectId) return;
-  submitting = true;
-  errorMessage = null;
-  render();
-
+async function confirmEdit() {
+  if (!selectedProspectId) return; submitting = true; errorMessage = null; renderPanel();
   try {
-    const result = await updateProspect({
-      id: selectedProspectId,
-      restaurant_name: editName,
-      address_input: editAddress,
-      address_normalized: editNormalized || null,
-      latitude: editLat,
-      longitude: editLon,
-      geocode_provider: editLat !== null ? 'Geoapify' : null,
-      geocode_reference: editPlaceId || null,
-    });
-
-    if ('code' in result && result.code === 'DUPLICATE_DETECTED') {
-      editDuplicates = result.duplicates;
-      editStep = 'duplicate';
-      submitting = false;
-      render();
-      return;
-    }
-
-    const updated = result as Prospect;
-    prospects = prospects.map((p) => (p.id === updated.id ? updated : p));
-    selectedProspectId = updated.id;
-    view = 'detail';
-    submitting = false;
-    render();
-  } catch (err: unknown) {
-    errorMessage =
-      err instanceof Error ? err.message : 'Failed to update prospect.';
-    submitting = false;
-    render();
-  }
+    const r = await updateProspect({ id: selectedProspectId, restaurant_name: edName, address_input: edAddr, address_normalized: edNorm || null, latitude: edLat, longitude: edLon, geocode_provider: edLat !== null ? 'Geoapify' : null, geocode_reference: edPid || null });
+    if ('code' in r && r.code === 'DUPLICATE_DETECTED') { edDups = r.duplicates; edStep = 'duplicate'; submitting = false; renderPanel(); return; }
+    const u = r as Prospect; prospects = prospects.map(p => p.id === u.id ? u : p); selectedProspectId = u.id; panelView = 'panel-detail'; refreshMarkers(); submitting = false; renderPanel();
+  } catch (er: unknown) { errorMessage = er instanceof Error ? er.message : 'Failed to update.'; submitting = false; renderPanel(); }
 }
 
-async function confirmEditDespiteDuplicate() {
-  if (!selectedProspectId) return;
-  submitting = true;
-  render();
-
-  try {
-    const result = await updateProspect({
-      id: selectedProspectId,
-      restaurant_name: editName,
-      address_input: editAddress,
-      address_normalized: editNormalized || null,
-      latitude: editLat,
-      longitude: editLon,
-      geocode_provider: editLat !== null ? 'Geoapify' : null,
-      geocode_reference: editPlaceId || null,
-      skip_duplicate_check: true,
-    });
-
-    const updated = result as Prospect;
-    prospects = prospects.map((p) => (p.id === updated.id ? updated : p));
-    selectedProspectId = updated.id;
-    view = 'detail';
-    submitting = false;
-    render();
-  } catch (err: unknown) {
-    errorMessage =
-      err instanceof Error ? err.message : 'Failed to update prospect.';
-    submitting = false;
-    render();
-  }
+async function confirmEditDup() {
+  if (!selectedProspectId) return; submitting = true; renderPanel();
+  try { const r = await updateProspect({ id: selectedProspectId, restaurant_name: edName, address_input: edAddr, address_normalized: edNorm || null, latitude: edLat, longitude: edLon, geocode_provider: edLat !== null ? 'Geoapify' : null, geocode_reference: edPid || null, skip_duplicate_check: true }); const u = r as Prospect; prospects = prospects.map(p => p.id === u.id ? u : p); selectedProspectId = u.id; panelView = 'panel-detail'; refreshMarkers(); submitting = false; renderPanel(); }
+  catch (er: unknown) { errorMessage = er instanceof Error ? er.message : 'Failed to update.'; submitting = false; renderPanel(); }
 }
 
-// ─── Detail View Actions ───────────────────────────────
-async function handleToggleStatus(id: string, currentDroppedOff: boolean) {
-  try {
-    const updated = await toggleDroppedOff(id, currentDroppedOff);
-    prospects = prospects.map((p) => (p.id === id ? updated : p));
-    if (selectedProspectId === id) {
-      selectedProspectId = id;
-    }
-    render();
-  } catch (err: unknown) {
-    errorMessage = err instanceof Error ? err.message : 'Failed to update status.';
-    render();
-  }
+// ─── Actions ───────────────────────────────────────────
+async function handleToggleDropped(id: string, cur: boolean) {
+  try { const u = await toggleDroppedOff(id, cur); prospects = prospects.map(p => p.id === id ? u : p); refreshMarkers(); if (panelView === 'panel-detail' && selectedProspectId === id) renderPanel(); else if (panelView === 'panel-list') renderPanel(); }
+  catch (e: unknown) { errorMessage = e instanceof Error ? e.message : 'Failed.'; renderPanel(); }
 }
 
 async function handleArchive(id: string) {
-  try {
-    await archiveProspect(id);
-    prospects = prospects.filter((p) => p.id !== id);
-    if (selectedProspectId === id) {
-      selectedProspectId = null;
-      view = 'list';
-    }
-    render();
-  } catch (err: unknown) {
-    errorMessage = err instanceof Error ? err.message : 'Failed to archive prospect.';
-    render();
-  }
+  try { await archiveProspect(id); prospects = prospects.filter(p => p.id !== id); refreshMarkers(); if (selectedProspectId === id) { selectedProspectId = null; panelView = 'panel-list'; } renderPanel(); }
+  catch (e: unknown) { errorMessage = e instanceof Error ? e.message : 'Failed.'; renderPanel(); }
 }
 
 async function handleRestore(id: string) {
-  try {
-    const updated = await restoreProspect(id);
-    prospects.unshift(updated);
-    if (selectedProspectId === id) {
-      selectedProspectId = id;
-      view = 'detail';
-    }
-    render();
-  } catch (err: unknown) {
-    errorMessage = err instanceof Error ? err.message : 'Failed to restore prospect.';
-    render();
-  }
+  try { const u = await restoreProspect(id); prospects.unshift(u); refreshMarkers(); if (selectedProspectId === id) { selectedProspectId = id; panelView = 'panel-detail'; } renderPanel(); }
+  catch (e: unknown) { errorMessage = e instanceof Error ? e.message : 'Failed.'; renderPanel(); }
 }
 
 async function handleDelete(id: string) {
-  if (!confirm('Permanently delete this prospect? This cannot be undone.')) return;
-  try {
-    await deleteProspect(id);
-    prospects = prospects.filter((p) => p.id !== id);
-    archivedProspects = archivedProspects.filter((p) => p.id !== id);
-    if (selectedProspectId === id) {
-      selectedProspectId = null;
-      view = 'list';
-    }
-    render();
-  } catch (err: unknown) {
-    errorMessage = err instanceof Error ? err.message : 'Failed to delete prospect.';
-    render();
-  }
+  if (!confirm('Permanently delete?')) return;
+  try { await deleteProspect(id); prospects = prospects.filter(p => p.id !== id); refreshMarkers(); if (selectedProspectId === id) { selectedProspectId = null; panelView = 'panel-list'; } renderPanel(); }
+  catch (e: unknown) { errorMessage = e instanceof Error ? e.message : 'Failed.'; renderPanel(); }
 }
 
-// ─── View Helpers ──────────────────────────────────────
-function getProspectById(id: string): Prospect | undefined {
-  return prospects.find((p) => p.id === id) || archivedProspects.find((p) => p.id === id);
+function getById(id: string): Prospect | undefined { return prospects.find(p => p.id === id); }
+
+// ─── Panel Render ──────────────────────────────────────
+function renderPanel() {
+  const p = document.getElementById('panel-container'); if (!p) return;
+  switch (panelView) { case 'panel-list': rList(p); break; case 'panel-add': rAdd(p); break; case 'panel-detail': rDetail(p); break; case 'panel-edit': rEdit(p); break; case 'panel-archived': rArch(p); break; }
 }
 
-// ─── Render ────────────────────────────────────────────
-function render() {
-  if (!appEl) return;
-
-  switch (view) {
-    case 'list':
-      renderList();
-      break;
-    case 'add':
-      renderAdd();
-      break;
-    case 'detail':
-      renderDetail();
-      break;
-    case 'edit':
-      renderEdit();
-      break;
-    case 'archived':
-      renderArchived();
-      break;
-  }
-}
-
-// ─── Render: List ──────────────────────────────────────
-function renderList() {
-  const filtered = prospects;
-  const activeCount = filtered.length;
-
-  appEl.innerHTML = `
-    <header class="app-header">
-      <h1 class="app-title">ON THE ROAD AGAIN</h1>
-      <p class="app-subtitle">Field Sales Restaurant Prospecting</p>
-    </header>
-
+function rList(p: HTMLElement) {
+  const nc = prospects.filter(x => x.latitude == null || x.longitude == null).length;
+  p.innerHTML = `<div class="panel-header"><h1 class="app-title">ON THE ROAD AGAIN</h1><p class="app-subtitle">${prospects.length} prospect${prospects.length !== 1 ? 's' : ''}</p></div>
     ${errorMessage ? `<div class="error-banner">${esc(errorMessage)}</div>` : ''}
-
-    <div class="search-bar">
-      <input
-        type="search"
-        id="search-input"
-        class="form-input search-input"
-        placeholder="Search prospects..."
-        value="${esc(searchQuery)}"
-        autocomplete="off"
-      />
-      ${searchQuery ? `<button class="btn btn-small btn-secondary" id="clear-search">✕</button>` : ''}
-    </div>
-
-    <button class="btn btn-primary btn-full" id="btn-add">
-      + Add Prospect
-    </button>
-
-    <section class="card">
-      <div class="card-title">
-        <span>Prospects</span>
-        <span class="badge badge-pending">${activeCount} active</span>
-      </div>
-
-      ${
-        loading
-          ? '<div class="empty-state">Loading...</div>'
-          : filtered.length === 0
-          ? `<div class="empty-state">${
-              searchQuery
-                ? 'No prospects match your search.'
-                : 'No prospects saved yet. Add one to get started.'
-            }</div>`
-          : `<div class="prospect-list">
-              ${filtered
-                .map(
-                  (p) => `
-                <div class="prospect-item" data-id="${p.id}">
-                  <div class="prospect-info">
-                    <div class="prospect-name">${esc(p.restaurant_name)}</div>
-                    <div class="prospect-address">${esc(p.address_input)}</div>
-                    ${p.address_normalized && p.address_normalized !== p.address_input ? `<div class="prospect-normalized">${esc(p.address_normalized)}</div>` : ''}
-                  </div>
-                  <div class="prospect-actions-row">
-                    ${p.dropped_off ? '<span class="badge badge-dropped">Dropped</span>' : ''}
-                    <button class="btn btn-small btn-secondary" data-action="view" data-id="${p.id}">View</button>
-                    <button class="btn btn-small btn-status ${p.dropped_off ? 'dropped' : 'pending'}" data-action="toggle-status" data-id="${p.id}" data-dropped="${p.dropped_off}">
-                      ${p.dropped_off ? '✓' : 'Drop'}
-                    </button>
-                  </div>
-                </div>
-              `
-                )
-                .join('')}
-            </div>`
-      }
-
-      <button class="btn btn-secondary btn-full btn-small-text" id="btn-archived">
-        📦 Show Archived (${archivedProspects.filter(p => p.archived).length})
-      </button>
-    </section>
-  `;
-
-  attachListEvents();
+    ${nc > 0 && !loading ? `<div class="info-banner">${nc} prospect${nc !== 1 ? 's' : ''} need${nc === 1 ? 's' : ''} an address update for the map.</div>` : ''}
+    <div class="panel-actions-row"><button class="btn btn-primary" id="btn-pl-add">+ Add Prospect</button><button class="btn btn-secondary" id="btn-pl-arch">📦 Archived</button></div>
+    <div class="prospect-list">${loading ? '<div class="empty-state">Loading...</div>' : !prospects.length ? `<div class="empty-state">${searchQuery ? 'No matches.' : 'No prospects saved yet.'}</div>` : prospects.map(x => `<div class="prospect-item" data-id="${x.id}"><div class="prospect-info"><div class="prospect-name">${esc(x.restaurant_name)}</div><div class="prospect-address">${esc(x.address_normalized || x.address_input)}</div></div><div class="prospect-actions-row">${x.dropped_off ? '<span class="badge badge-dropped">Dropped</span>' : ''}<button class="btn btn-small btn-secondary pl-view" data-id="${x.id}">View</button><button class="btn btn-small btn-status ${x.dropped_off ? 'dropped' : 'pending'} pl-toggle" data-id="${x.id}" data-dr="${x.dropped_off}">${x.dropped_off ? '✓' : 'Drop'}</button></div></div>`).join('')}</div>`;
+  document.getElementById('btn-pl-add')?.addEventListener('click', () => { resetAdd(); panelView = 'panel-add'; renderPanel(); });
+  document.getElementById('btn-pl-arch')?.addEventListener('click', () => { panelView = 'panel-archived'; renderPanel(); });
+  p.querySelectorAll('.prospect-item').forEach(el => el.addEventListener('click', () => { const id = el.getAttribute('data-id'); if (id) { selectedProspectId = id; panelView = 'panel-detail'; renderPanel(); } }));
+  p.querySelectorAll('.pl-view').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); const id = b.getAttribute('data-id'); if (id) { selectedProspectId = id; panelView = 'panel-detail'; renderPanel(); } }));
+  p.querySelectorAll('.pl-toggle').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); handleToggleDropped(b.getAttribute('data-id')!, b.getAttribute('data-dr') === 'true'); }));
+  updateSearchBar();
 }
 
-function attachListEvents() {
-  document.getElementById('btn-add')?.addEventListener('click', () => {
-    resetAddState();
-    view = 'add';
-    render();
-  });
-
-  const searchInput = document.getElementById('search-input') as HTMLInputElement;
-  searchInput?.addEventListener('input', (e) => {
-    searchQuery = (e.target as HTMLInputElement).value;
-    loadData();
-  });
-  document.getElementById('clear-search')?.addEventListener('click', () => {
-    searchQuery = '';
-    loadData();
-  });
-
-  document.getElementById('btn-archived')?.addEventListener('click', () => {
-    view = 'archived';
-    render();
-  });
-
-  document.querySelectorAll('[data-action="view"]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      selectedProspectId = btn.getAttribute('data-id');
-      view = 'detail';
-      render();
-    });
-  });
-
-  document.querySelectorAll('[data-action="toggle-status"]').forEach((btn) => {
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const id = btn.getAttribute('data-id')!;
-      const isDropped = btn.getAttribute('data-dropped') === 'true';
-      handleToggleStatus(id, isDropped);
-    });
-  });
-}
-
-// ─── Render: Add ───────────────────────────────────────
-function renderAdd() {
-  if (addStep === 'duplicate') {
-    renderAddDuplicate();
-    return;
-  }
-
-  if (addStep === 'confirm') {
-    renderAddConfirm();
-    return;
-  }
-
-  appEl.innerHTML = `
-    <header class="app-header">
-      <button class="btn btn-back" id="btn-back-add">← Back</button>
-      <h1 class="app-title" style="font-size:1.25rem;">Add Prospect</h1>
-    </header>
-
+function rAdd(p: HTMLElement) {
+  if (addStep === 'duplicate') { rAddDup(p); return; }
+  if (addStep === 'confirm') { rAddConf(p); return; }
+  p.innerHTML = `<div class="panel-header"><button class="btn btn-back" id="btn-cx-add">← Back</button><h1 class="app-title" style="font-size:1.15rem;">Add Prospect</h1></div>
     ${errorMessage ? `<div class="error-banner">${esc(errorMessage)}</div>` : ''}
-
-    <section class="card">
-      <form id="add-prospect-form">
-        <div class="form-group">
-          <label class="form-label" for="restaurant_name">Restaurant / Business Name</label>
-          <input
-            type="text"
-            id="restaurant_name"
-            class="form-input"
-            placeholder="e.g. Lupie's Cafe"
-            required
-            maxlength="200"
-            value="${esc(addName)}"
-            ${submitting ? 'disabled' : ''}
-          />
-        </div>
-
-        <div class="form-group autocomplete-wrapper">
-          <label class="form-label" for="address_input">Address</label>
-          <input
-            type="text"
-            id="address_input"
-            class="form-input"
-            placeholder="Start typing an address..."
-            required
-            maxlength="500"
-            value="${esc(addAddress)}"
-            autocomplete="off"
-            ${submitting ? 'disabled' : ''}
-          />
-          ${
-            autocompleteVisible
-              ? `<div class="autocomplete-dropdown">
-                  ${autocompleteSuggestions
-                    .map(
-                      (s) => `
-                    <button type="button" class="autocomplete-item" data-index="${autocompleteSuggestions.indexOf(s)}">
-                      <span class="autocomplete-label">${esc(s.formatted)}</span>
-                    </button>
-                  `
-                    )
-                    .join('')}
-                </div>`
-              : ''
-          }
-          <div class="form-hint">Select a suggestion for best results, or type a full address.</div>
-        </div>
-
-        <button type="submit" class="btn btn-primary" style="width:100%;" ${submitting ? 'disabled' : ''}>
-          ${submitting ? 'Searching address...' : 'Continue'}
-        </button>
-      </form>
-    </section>
-  `;
-
-  // Attach events
-  document.getElementById('btn-back-add')?.addEventListener('click', () => {
-    resetAddState();
-    view = 'list';
-    render();
-  });
-
-  const form = document.getElementById('add-prospect-form');
-  form?.addEventListener('submit', (e) => handleAddProspect(e as SubmitEvent));
-
-  const addrInput = document.getElementById('address_input') as HTMLInputElement;
-  addrInput?.addEventListener('input', () => {
-    addAddressSelected = false;
-    addAddress = addrInput.value;
-    triggerAutocomplete(
-      addrInput.value,
-      (s) => {
-        autocompleteSuggestions = s;
-      },
-      (v) => {
-        autocompleteVisible = v;
-      },
-      { current: autocompleteAbort },
-      { current: autocompleteDebounce }
-    );
-    render();
-  });
-
-  // Attach autocomplete item clicks after render
-  document.querySelectorAll('.autocomplete-item').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const idx = parseInt(btn.getAttribute('data-index') || '0');
-      if (autocompleteSuggestions[idx]) {
-        selectSuggestion(autocompleteSuggestions[idx]);
-      }
-    });
-  });
-
-  // Keyboard navigation for autocomplete
-  addrInput?.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') {
-      autocompleteVisible = false;
-      autocompleteSuggestions = [];
-      render();
-    }
-  });
-
-  // Close autocomplete on outside click
-  document.addEventListener('click', function closeAutocomplete(e: Event) {
-    const target = e.target as HTMLElement;
-    if (!target.closest('.autocomplete-wrapper')) {
-      autocompleteVisible = false;
-      render();
-    }
-  }, { once: true });
+    <div class="card"><form id="add-form"><div class="form-group"><label class="form-label" for="rname">Restaurant / Business Name</label><input type="text" id="rname" class="form-input" placeholder="e.g. Lupie's Cafe" required maxlength="200" value="${esc(addName)}" ${submitting ? 'disabled' : ''}></div>
+    <div class="form-group" id="ac-wrap"><label class="form-label" for="addr">Address</label><input type="text" id="addr" class="form-input" placeholder="Start typing..." required maxlength="500" value="${esc(addAddress)}" autocomplete="off" ${submitting ? 'disabled' : ''}><div class="form-hint">Select a suggestion or type a full address.</div></div>
+    <button type="submit" class="btn btn-primary" style="width:100%;" ${submitting ? 'disabled' : ''}>${submitting ? 'Searching...' : 'Continue'}</button></form></div>`;
+  document.getElementById('btn-cx-add')?.addEventListener('click', () => { resetAdd(); panelView = 'panel-list'; renderPanel(); });
+  document.getElementById('add-form')?.addEventListener('submit', e => handleAddSubmit(e as SubmitEvent));
+  const ai = document.getElementById('addr') as HTMLInputElement, aw = document.getElementById('ac-wrap')!;
+  function reb() { updateAcDropdown(aw, acSug, acVis, selAddSug); }
+  ai?.addEventListener('input', () => { addAddressSelected = false; addAddress = ai.value; triggerAc(ai.value, s => { acSug = s; }, v => { acVis = v; }, acAbort, a => { acAbort = a; }, acTimer, t => { acTimer = t; }, reb); });
+  if (acVis) reb();
 }
 
-function renderAddConfirm() {
-  appEl.innerHTML = `
-    <header class="app-header">
-      <button class="btn btn-back" id="btn-back-confirm">← Back</button>
-      <h1 class="app-title" style="font-size:1.25rem;">Confirm Prospect</h1>
-    </header>
-
+function rAddConf(p: HTMLElement) {
+  p.innerHTML = `<div class="panel-header"><button class="btn btn-back" id="btn-bk-ac">← Back</button><h1 class="app-title" style="font-size:1.15rem;">Confirm Prospect</h1></div>
     ${errorMessage ? `<div class="error-banner">${esc(errorMessage)}</div>` : ''}
-
-    <section class="card">
-      <div class="confirm-detail">
-        <h2 class="confirm-name">${esc(addName)}</h2>
-        <p class="confirm-address">${esc(addNormalized || addAddress)}</p>
-        ${addLat !== null ? `<p class="confirm-coords">📍 ${addLat!.toFixed(5)}, ${addLon!.toFixed(5)}</p>` : ''}
-      </div>
-
-      <div class="btn-row">
-        <button class="btn btn-secondary" id="btn-cancel-add" style="flex:1;">Cancel</button>
-        <button class="btn btn-primary" id="btn-confirm-add" style="flex:1;" ${submitting ? 'disabled' : ''}>
-          ${submitting ? 'Saving...' : 'Save Prospect'}
-        </button>
-      </div>
-    </section>
-  `;
-
-  document.getElementById('btn-back-confirm')?.addEventListener('click', () => {
-    addStep = 'entry';
-    render();
-  });
-  document.getElementById('btn-cancel-add')?.addEventListener('click', () => {
-    resetAddState();
-    view = 'list';
-    render();
-  });
-  document.getElementById('btn-confirm-add')?.addEventListener('click', confirmAddProspect);
+    <div class="card"><div class="confirm-detail"><h2 class="confirm-name">${esc(addName)}</h2><p class="confirm-address">${esc(addNormalized || addAddress)}</p>${addLat !== null ? `<p class="confirm-coords">📍 ${addLat!.toFixed(5)}, ${addLon!.toFixed(5)}</p>` : ''}</div>
+    <div class="btn-row"><button class="btn btn-secondary" id="btn-cx-ac" style="flex:1;">Cancel</button><button class="btn btn-primary" id="btn-cf-ac" style="flex:1;" ${submitting ? 'disabled' : ''}>${submitting ? 'Saving...' : 'Save Prospect'}</button></div></div>`;
+  document.getElementById('btn-bk-ac')?.addEventListener('click', () => { addStep = 'entry'; renderPanel(); });
+  document.getElementById('btn-cx-ac')?.addEventListener('click', () => { resetAdd(); panelView = 'panel-list'; renderPanel(); });
+  document.getElementById('btn-cf-ac')?.addEventListener('click', confirmAdd);
 }
 
-function renderAddDuplicate() {
-  appEl.innerHTML = `
-    <header class="app-header">
-      <h1 class="app-title" style="font-size:1.25rem;">Possible Duplicate</h1>
-    </header>
-
-    <section class="card">
-      <div class="warning-banner">
-        This prospect may already exist in your database.
-      </div>
-
-      ${addDuplicates
-        .map(
-          (d) => `
-        <div class="duplicate-card">
-          <div class="prospect-name">${esc(d.restaurant_name)}</div>
-          <div class="prospect-address">${esc(d.address_normalized || d.address_input)}</div>
-          <button class="btn btn-secondary btn-small" data-action="open-existing" data-id="${d.id}">Open Existing</button>
-        </div>
-      `
-        )
-        .join('')}
-
-      <div class="btn-row">
-        <button class="btn btn-secondary" id="btn-cancel-dup" style="flex:1;">Cancel</button>
-        <button class="btn btn-primary" id="btn-save-anyway" style="flex:1;" ${submitting ? 'disabled' : ''}>
-          ${submitting ? 'Saving...' : 'Save Anyway'}
-        </button>
-      </div>
-    </section>
-  `;
-
-  document.getElementById('btn-cancel-dup')?.addEventListener('click', () => {
-    resetAddState();
-    view = 'list';
-    render();
-  });
-  document.getElementById('btn-save-anyway')?.addEventListener('click', confirmAddDespiteDuplicate);
-
-  document.querySelectorAll('[data-action="open-existing"]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      selectedProspectId = btn.getAttribute('data-id');
-      resetAddState();
-      view = 'detail';
-      render();
-    });
-  });
+function rAddDup(p: HTMLElement) {
+  p.innerHTML = `<div class="panel-header"><h1 class="app-title" style="font-size:1.15rem;">Possible Duplicate</h1></div>
+    <div class="card"><div class="warning-banner">This prospect may already exist.</div>
+    ${addDuplicates.map(d => `<div class="duplicate-card"><div class="prospect-name">${esc(d.restaurant_name)}</div><div class="prospect-address">${esc(d.address_normalized || d.address_input)}</div><button class="btn btn-secondary btn-small ad-open" data-id="${d.id}">Open Existing</button></div>`).join('')}
+    <div class="btn-row"><button class="btn btn-secondary" id="btn-cx-dup" style="flex:1;">Cancel</button><button class="btn btn-primary" id="btn-sv-dup" style="flex:1;" ${submitting ? 'disabled' : ''}>${submitting ? 'Saving...' : 'Save Anyway'}</button></div></div>`;
+  document.getElementById('btn-cx-dup')?.addEventListener('click', () => { resetAdd(); panelView = 'panel-list'; renderPanel(); });
+  document.getElementById('btn-sv-dup')?.addEventListener('click', confirmAddDup);
+  p.querySelectorAll('.ad-open').forEach(b => b.addEventListener('click', () => { const id = b.getAttribute('data-id'); if (id) { selectedProspectId = id; resetAdd(); panelView = 'panel-detail'; renderPanel(); } }));
 }
 
-// ─── Render: Detail ────────────────────────────────────
-function renderDetail() {
-  const prospect = getProspectById(selectedProspectId || '');
-  if (!prospect) {
-    view = 'list';
-    render();
-    return;
-  }
-
-  const displayAddr = prospect.address_normalized || prospect.address_input;
-
-  appEl.innerHTML = `
-    <header class="app-header">
-      <button class="btn btn-back" id="btn-back-detail">← Back</button>
-      <h1 class="app-title" style="font-size:1.25rem;">${esc(prospect.restaurant_name)}</h1>
-    </header>
-
+function rDetail(p: HTMLElement) {
+  const x = getById(selectedProspectId || ''); if (!x) { panelView = 'panel-list'; renderPanel(); return; }
+  const a = x.address_normalized || x.address_input;
+  p.innerHTML = `<div class="panel-header"><button class="btn btn-back" id="btn-bk-dt">← Back</button><h1 class="app-title" style="font-size:1.15rem;">${esc(x.restaurant_name)}</h1></div>
     ${errorMessage ? `<div class="error-banner">${esc(errorMessage)}</div>` : ''}
-
-    <section class="card">
-      <div class="detail-section">
-        <div class="detail-label">Address</div>
-        <div class="detail-value">${esc(displayAddr)}</div>
-        ${prospect.address_input !== prospect.address_normalized && prospect.address_normalized ? `<div class="detail-muted">Original: ${esc(prospect.address_input)}</div>` : ''}
-      </div>
-
-      ${prospect.latitude !== null ? `
-      <div class="detail-section">
-        <div class="detail-label">Coordinates</div>
-        <div class="detail-value detail-coords">📍 ${prospect.latitude.toFixed(5)}, ${prospect.longitude!.toFixed(5)}</div>
-      </div>
-      ` : ''}
-
-      <div class="detail-section">
-        <div class="detail-label">Status</div>
-        <div class="detail-value">
-          ${prospect.dropped_off
-            ? `<span class="badge badge-dropped">✓ Dropped Off</span>
-               <div class="detail-muted">${prospect.dropped_off_at ? new Date(prospect.dropped_off_at).toLocaleString() : ''}</div>`
-            : `<span class="badge badge-pending">Not Dropped Off</span>`
-          }
-        </div>
-      </div>
-
-      ${prospect.archived ? `<div class="detail-section"><div class="detail-label"></div><div class="detail-value"><span class="badge badge-archived">Archived</span></div></div>` : ''}
-
-      <div class="detail-section">
-        <div class="detail-label">Created</div>
-        <div class="detail-value detail-muted">${new Date(prospect.created_at).toLocaleString()}</div>
-      </div>
-    </section>
-
-    <section class="card">
-      <div class="detail-actions">
-        ${!prospect.archived ? `
-          <button class="btn btn-status ${prospect.dropped_off ? 'dropped' : 'pending'} btn-full" id="btn-toggle-status">
-            ${prospect.dropped_off ? '✓ Dropped Off — Undo' : 'Mark Dropped Off'}
-          </button>
-          <button class="btn btn-secondary btn-full" id="btn-edit">✏️ Edit Prospect</button>
-          <button class="btn btn-secondary btn-full" id="btn-archive">📦 Archive Prospect</button>
-        ` : `
-          <button class="btn btn-primary btn-full" id="btn-restore">↩️ Restore Prospect</button>
-        `}
-        <button class="btn btn-danger btn-full" id="btn-delete">🗑️ Delete Permanently</button>
-      </div>
-    </section>
-  `;
-
-  document.getElementById('btn-back-detail')?.addEventListener('click', () => {
-    selectedProspectId = null;
-    view = 'list';
-    render();
-  });
-  document.getElementById('btn-toggle-status')?.addEventListener('click', () => {
-    handleToggleStatus(prospect.id, prospect.dropped_off);
-  });
-  document.getElementById('btn-edit')?.addEventListener('click', () => {
-    startEdit(prospect);
-  });
-  document.getElementById('btn-archive')?.addEventListener('click', () => {
-    handleArchive(prospect.id);
-  });
-  document.getElementById('btn-restore')?.addEventListener('click', () => {
-    handleRestore(prospect.id);
-  });
-  document.getElementById('btn-delete')?.addEventListener('click', () => {
-    handleDelete(prospect.id);
-  });
+    <div class="card"><div class="detail-section"><div class="detail-label">Address</div><div class="detail-value">${esc(a)}</div>${x.address_input !== x.address_normalized && x.address_normalized ? `<div class="detail-muted">Original: ${esc(x.address_input)}</div>` : ''}</div>
+    ${x.latitude !== null ? `<div class="detail-section"><div class="detail-label">Coordinates</div><div class="detail-value detail-coords">📍 ${x.latitude.toFixed(5)}, ${x.longitude!.toFixed(5)}</div></div>` : ''}
+    <div class="detail-section"><div class="detail-label">Status</div><div class="detail-value">${x.dropped_off ? `<span class="badge badge-dropped">✓ Dropped Off</span><div class="detail-muted">${x.dropped_off_at ? new Date(x.dropped_off_at).toLocaleString() : ''}</div>` : '<span class="badge badge-pending">Not Dropped Off</span>'}</div></div>
+    ${x.archived ? '<div class="detail-section"><div class="detail-label"></div><div class="detail-value"><span class="badge badge-archived">Archived</span></div></div>' : ''}
+    <div class="detail-section"><div class="detail-label">Created</div><div class="detail-value detail-muted">${new Date(x.created_at).toLocaleString()}</div></div></div>
+    <div class="card"><div class="detail-actions">
+    <button class="btn btn-secondary btn-full" id="btn-dt-fly">📍 Show on Map</button>
+    ${!x.archived ? `<button class="btn btn-status ${x.dropped_off ? 'dropped' : 'pending'} btn-full" id="btn-dt-tog">${x.dropped_off ? '✓ Dropped Off — Undo' : 'Mark Dropped Off'}</button><button class="btn btn-secondary btn-full" id="btn-dt-ed">✏️ Edit</button><button class="btn btn-secondary btn-full" id="btn-dt-arch">📦 Archive</button>` : '<button class="btn btn-primary btn-full" id="btn-dt-rest">↩️ Restore</button>'}
+    <button class="btn btn-danger btn-full" id="btn-dt-del">🗑️ Delete Permanently</button></div></div>`;
+  document.getElementById('btn-bk-dt')?.addEventListener('click', () => { selectedProspectId = null; panelView = 'panel-list'; renderPanel(); });
+  document.getElementById('btn-dt-fly')?.addEventListener('click', () => flyTo(x));
+  document.getElementById('btn-dt-tog')?.addEventListener('click', () => handleToggleDropped(x.id, x.dropped_off));
+  document.getElementById('btn-dt-ed')?.addEventListener('click', () => startEdit(x));
+  document.getElementById('btn-dt-arch')?.addEventListener('click', () => handleArchive(x.id));
+  document.getElementById('btn-dt-rest')?.addEventListener('click', () => handleRestore(x.id));
+  document.getElementById('btn-dt-del')?.addEventListener('click', () => handleDelete(x.id));
 }
 
-// ─── Render: Edit ──────────────────────────────────────
-function renderEdit() {
-  const prospect = getProspectById(selectedProspectId || '');
-  if (!prospect) { view = 'list'; render(); return; }
-
-  if (editStep === 'duplicate') {
-    renderEditDuplicate();
-    return;
-  }
-  if (editStep === 'confirm') {
-    renderEditConfirm();
-    return;
-  }
-
-  appEl.innerHTML = `
-    <header class="app-header">
-      <button class="btn btn-back" id="btn-back-edit">← Cancel</button>
-      <h1 class="app-title" style="font-size:1.25rem;">Edit Prospect</h1>
-    </header>
-
+function rEdit(p: HTMLElement) {
+  const x = getById(selectedProspectId || ''); if (!x) { panelView = 'panel-list'; renderPanel(); return; }
+  if (edStep === 'duplicate') { rEditDup(p); return; }
+  if (edStep === 'confirm') { rEditConf(p); return; }
+  p.innerHTML = `<div class="panel-header"><button class="btn btn-back" id="btn-cx-ed">← Cancel</button><h1 class="app-title" style="font-size:1.15rem;">Edit Prospect</h1></div>
     ${errorMessage ? `<div class="error-banner">${esc(errorMessage)}</div>` : ''}
-
-    <section class="card">
-      <form id="edit-prospect-form">
-        <div class="form-group">
-          <label class="form-label" for="edit_restaurant_name">Restaurant / Business Name</label>
-          <input type="text" id="edit_restaurant_name" class="form-input" value="${esc(editName)}" required maxlength="200" ${submitting ? 'disabled' : ''} />
-        </div>
-
-        <div class="form-group autocomplete-wrapper">
-          <label class="form-label" for="edit_address_input">Address</label>
-          <input type="text" id="edit_address_input" class="form-input" value="${esc(editAddress)}" required maxlength="500" autocomplete="off" ${submitting ? 'disabled' : ''} />
-          ${editAutocompleteVisible
-            ? `<div class="autocomplete-dropdown">
-                ${editAutocompleteSuggestions.map(s => `
-                  <button type="button" class="autocomplete-item" data-index="${editAutocompleteSuggestions.indexOf(s)}">
-                    <span class="autocomplete-label">${esc(s.formatted)}</span>
-                  </button>
-                `).join('')}
-              </div>`
-            : ''}
-        </div>
-
-        <button type="submit" class="btn btn-primary" style="width:100%;" ${submitting ? 'disabled' : ''}>
-          ${submitting ? 'Checking address...' : 'Save Changes'}
-        </button>
-      </form>
-    </section>
-  `;
-
-  document.getElementById('btn-back-edit')?.addEventListener('click', () => {
-    view = 'detail';
-    render();
-  });
-
-  const form = document.getElementById('edit-prospect-form');
-  form?.addEventListener('submit', (e) => handleEditSubmit(e as SubmitEvent));
-
-  const addrInput = document.getElementById('edit_address_input') as HTMLInputElement;
-  addrInput?.addEventListener('input', () => {
-    editAddress = addrInput.value;
-    triggerAutocomplete(
-      addrInput.value,
-      (s) => { editAutocompleteSuggestions = s; },
-      (v) => { editAutocompleteVisible = v; },
-      { current: editAutocompleteAbort },
-      { current: editAutocompleteDebounce }
-    );
-    render();
-  });
-
-  document.querySelectorAll('#edit-prospect-form .autocomplete-item').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const idx = parseInt(btn.getAttribute('data-index') || '0');
-      if (editAutocompleteSuggestions[idx]) {
-        selectEditSuggestion(editAutocompleteSuggestions[idx]);
-      }
-    });
-  });
+    <div class="card"><form id="ed-form"><div class="form-group"><label class="form-label" for="edname">Restaurant / Business Name</label><input type="text" id="edname" class="form-input" value="${esc(edName)}" required maxlength="200" ${submitting ? 'disabled' : ''}></div>
+    <div class="form-group" id="ed-ac-wrap"><label class="form-label" for="edaddr">Address</label><input type="text" id="edaddr" class="form-input" value="${esc(edAddr)}" required maxlength="500" autocomplete="off" ${submitting ? 'disabled' : ''}></div>
+    <button type="submit" class="btn btn-primary" style="width:100%;" ${submitting ? 'disabled' : ''}>${submitting ? 'Checking...' : 'Save Changes'}</button></form></div>`;
+  document.getElementById('btn-cx-ed')?.addEventListener('click', () => { panelView = 'panel-detail'; renderPanel(); });
+  document.getElementById('ed-form')?.addEventListener('submit', e => handleEditSubmit(e as SubmitEvent));
+  const ai = document.getElementById('edaddr') as HTMLInputElement, aw = document.getElementById('ed-ac-wrap')!;
+  function reb() { updateAcDropdown(aw, edAcSug, edAcVis, selEdSug); }
+  ai?.addEventListener('input', () => { edAddr = ai.value; triggerAc(ai.value, s => { edAcSug = s; }, v => { edAcVis = v; }, edAcAbort, a => { edAcAbort = a; }, edAcTimer, t => { edAcTimer = t; }, reb); });
+  if (edAcVis) reb();
 }
 
-function renderEditConfirm() {
-  appEl.innerHTML = `
-    <header class="app-header">
-      <button class="btn btn-back" id="btn-back-edit-confirm">← Back</button>
-      <h1 class="app-title" style="font-size:1.25rem;">Confirm Changes</h1>
-    </header>
-
-    <section class="card">
-      <div class="confirm-detail">
-        <h2 class="confirm-name">${esc(editName)}</h2>
-        <p class="confirm-address">${esc(editNormalized || editAddress)}</p>
-        ${editLat !== null ? `<p class="confirm-coords">📍 ${editLat!.toFixed(5)}, ${editLon!.toFixed(5)}</p>` : ''}
-      </div>
-
-      <div class="btn-row">
-        <button class="btn btn-secondary" id="btn-cancel-edit" style="flex:1;">Cancel</button>
-        <button class="btn btn-primary" id="btn-confirm-edit" style="flex:1;" ${submitting ? 'disabled' : ''}>
-          ${submitting ? 'Saving...' : 'Save Changes'}
-        </button>
-      </div>
-    </section>
-  `;
-
-  document.getElementById('btn-back-edit-confirm')?.addEventListener('click', () => {
-    editStep = 'entry';
-    render();
-  });
-  document.getElementById('btn-cancel-edit')?.addEventListener('click', () => {
-    view = 'detail';
-    render();
-  });
-  document.getElementById('btn-confirm-edit')?.addEventListener('click', confirmEditProspect);
+function rEditConf(p: HTMLElement) {
+  p.innerHTML = `<div class="panel-header"><button class="btn btn-back" id="btn-bk-ec">← Back</button><h1 class="app-title" style="font-size:1.15rem;">Confirm Changes</h1></div>
+    <div class="card"><div class="confirm-detail"><h2 class="confirm-name">${esc(edName)}</h2><p class="confirm-address">${esc(edNorm || edAddr)}</p>${edLat !== null ? `<p class="confirm-coords">📍 ${edLat!.toFixed(5)}, ${edLon!.toFixed(5)}</p>` : ''}</div>
+    <div class="btn-row"><button class="btn btn-secondary" id="btn-cx-ec" style="flex:1;">Cancel</button><button class="btn btn-primary" id="btn-cf-ec" style="flex:1;" ${submitting ? 'disabled' : ''}>${submitting ? 'Saving...' : 'Save Changes'}</button></div></div>`;
+  document.getElementById('btn-bk-ec')?.addEventListener('click', () => { edStep = 'entry'; renderPanel(); });
+  document.getElementById('btn-cx-ec')?.addEventListener('click', () => { panelView = 'panel-detail'; renderPanel(); });
+  document.getElementById('btn-cf-ec')?.addEventListener('click', confirmEdit);
 }
 
-function renderEditDuplicate() {
-  appEl.innerHTML = `
-    <header class="app-header">
-      <h1 class="app-title" style="font-size:1.25rem;">Possible Duplicate</h1>
-    </header>
-
-    <section class="card">
-      <div class="warning-banner">This change would create what appears to be a duplicate.</div>
-
-      ${editDuplicates.map(d => `
-        <div class="duplicate-card">
-          <div class="prospect-name">${esc(d.restaurant_name)}</div>
-          <div class="prospect-address">${esc(d.address_normalized || d.address_input)}</div>
-        </div>
-      `).join('')}
-
-      <div class="btn-row">
-        <button class="btn btn-secondary" id="btn-cancel-edit-dup" style="flex:1;">Cancel</button>
-        <button class="btn btn-primary" id="btn-save-edit-anyway" style="flex:1;" ${submitting ? 'disabled' : ''}>
-          ${submitting ? 'Saving...' : 'Save Anyway'}
-        </button>
-      </div>
-    </section>
-  `;
-
-  document.getElementById('btn-cancel-edit-dup')?.addEventListener('click', () => {
-    view = 'detail';
-    render();
-  });
-  document.getElementById('btn-save-edit-anyway')?.addEventListener('click', confirmEditDespiteDuplicate);
+function rEditDup(p: HTMLElement) {
+  p.innerHTML = `<div class="panel-header"><h1 class="app-title" style="font-size:1.15rem;">Possible Duplicate</h1></div>
+    <div class="card"><div class="warning-banner">This change appears to create a duplicate.</div>
+    ${edDups.map(d => `<div class="duplicate-card"><div class="prospect-name">${esc(d.restaurant_name)}</div><div class="prospect-address">${esc(d.address_normalized || d.address_input)}</div></div>`).join('')}
+    <div class="btn-row"><button class="btn btn-secondary" id="btn-cx-edd" style="flex:1;">Cancel</button><button class="btn btn-primary" id="btn-sv-edd" style="flex:1;" ${submitting ? 'disabled' : ''}>${submitting ? 'Saving...' : 'Save Anyway'}</button></div></div>`;
+  document.getElementById('btn-cx-edd')?.addEventListener('click', () => { panelView = 'panel-detail'; renderPanel(); });
+  document.getElementById('btn-sv-edd')?.addEventListener('click', confirmEditDup);
 }
 
-// ─── Render: Archived ──────────────────────────────────
-function renderArchived() {
-  const archived = archivedProspects.filter((p) => p.archived);
-
-  appEl.innerHTML = `
-    <header class="app-header">
-      <button class="btn btn-back" id="btn-back-archived">← Back</button>
-      <h1 class="app-title" style="font-size:1.25rem;">Archived Prospects</h1>
-    </header>
-
-    <section class="card">
-      <div class="card-title">
-        <span>Archived</span>
-        <span class="badge badge-pending">${archived.length} archived</span>
-      </div>
-
-      ${archived.length === 0
-        ? '<div class="empty-state">No archived prospects.</div>'
-        : `<div class="prospect-list">
-            ${archived.map(p => `
-              <div class="prospect-item" data-id="${p.id}">
-                <div class="prospect-info">
-                  <div class="prospect-name">${esc(p.restaurant_name)}</div>
-                  <div class="prospect-address">${esc(p.address_normalized || p.address_input)}</div>
-                </div>
-                <div class="prospect-actions-row">
-                  <button class="btn btn-small btn-primary" data-action="restore" data-id="${p.id}">Restore</button>
-                </div>
-              </div>
-            `).join('')}
-          </div>`
-      }
-    </section>
-  `;
-
-  document.getElementById('btn-back-archived')?.addEventListener('click', () => {
-    view = 'list';
-    render();
-  });
-
-  document.querySelectorAll('[data-action="restore"]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      handleRestore(btn.getAttribute('data-id')!);
-    });
-  });
+function rArch(p: HTMLElement) {
+  const ar = prospects.filter(x => x.archived);
+  p.innerHTML = `<div class="panel-header"><button class="btn btn-back" id="btn-bk-ar">← Back</button><h1 class="app-title" style="font-size:1.15rem;">Archived</h1></div>
+    <div class="card"><div class="card-title"><span>Archived</span><span class="badge badge-pending">${ar.length} archived</span></div>
+    ${!ar.length ? '<div class="empty-state">No archived prospects.</div>' : `<div class="prospect-list">${ar.map(x => `<div class="prospect-item" data-id="${x.id}"><div class="prospect-info"><div class="prospect-name">${esc(x.restaurant_name)}</div><div class="prospect-address">${esc(x.address_normalized || x.address_input)}</div></div><div class="prospect-actions-row"><button class="btn btn-small btn-primary ar-rest" data-id="${x.id}">Restore</button></div></div>`).join('')}</div>`}</div>`;
+  document.getElementById('btn-bk-ar')?.addEventListener('click', () => { panelView = 'panel-list'; renderPanel(); });
+  p.querySelectorAll('.ar-rest').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); handleRestore(b.getAttribute('data-id')!); }));
 }
 
-// ─── Utilities ─────────────────────────────────────────
-function esc(str: string): string {
-  return str
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;');
-}
+function esc(s: string): string { return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;'); }
 
 // ─── Bootstrap ─────────────────────────────────────────
+setupShell();
 loadData();
