@@ -152,7 +152,7 @@ function resetImport() {
 
 // ─── Route State ───────────────────────────────────────
 const ROUTE_KEY = 'otra.currentRoute';
-const MAX_ROUTE = 10;
+const MAX_ROUTE = 9;
 let routeIds: string[] = [];
 
 function loadRoute(): string[] {
@@ -199,47 +199,46 @@ function clearRoute() {
 
 // ─── Google Maps Handoff ───────────────────────────────
 
-function buildGoogleMapsUrl(): string | { error: string } {
+function buildGoogleMapsUrl(origin: [number, number] | null): string | { error: string } {
   const items = routeIds.map(id => getById(id)).filter(Boolean) as Prospect[];
-  if (items.length === 0) return { error: 'No stops selected.' };
+  if (items.length === 0) return { error: 'Select at least one restaurant first.' };
 
-  // Validate all stops have coordinates
   const invalid = items.filter(p => p.latitude == null || p.longitude == null);
   if (invalid.length > 0) {
     return { error: `${invalid[0].restaurant_name} needs a valid mapped address before this route can be sent.` };
   }
 
-  // Separate waypoints and destination
   const dest = items[items.length - 1];
   const waypoints = items.slice(0, -1);
-
-  // Build URL with coordinates
   const wpStr = waypoints.map(p => `${p.latitude},${p.longitude}`).join('|');
-  let url = `https://www.google.com/maps/dir/?api=1&travelmode=driving`;
+  let url = 'https://www.google.com/maps/dir/?api=1&travelmode=driving';
+  if (origin) url += `&origin=${encodeURIComponent(`${origin[1]},${origin[0]}`)}`;
   if (wpStr) url += `&waypoints=${encodeURIComponent(wpStr)}`;
   url += `&destination=${encodeURIComponent(`${dest.latitude},${dest.longitude}`)}`;
 
-  // URL length check (safe limit for browsers ~2000 chars; coords should keep us well under)
   if (url.length > 2000) return { error: 'Route URL is too long. This is unexpected with coordinate-based stops.' };
-
   return url;
 }
 
-function handleSendToGoogleMaps() {
-  const result = buildGoogleMapsUrl();
+async function handleSendToGoogleMaps() {
+  // Ask only when the user sends a route. Google Maps still opens if permission
+  // is declined, using its own current-location setting.
+  const origin = currentLocation || await requestCurrentLocation(false);
+  const result = buildGoogleMapsUrl(origin);
   if (typeof result === 'object' && 'error' in result) {
     errorMessage = result.error;
     renderPanel();
     return;
   }
-  // Open in new tab/window — on mobile this typically opens Google Maps app
-  window.open(result as string, '_blank', 'noopener');
+  window.open(result, '_blank', 'noopener');
 }
 
 // ─── Map ───────────────────────────────────────────────
 let map: maplibregl.Map | null = null;
 let markers: Map<string, maplibregl.Marker> = new Map();
 let mapPopup: maplibregl.Popup | null = null;
+let currentLocation: [number, number] | null = null;
+let currentLocationMarker: maplibregl.Marker | null = null;
 let mapReady = false;
 let initialMapFitApplied = false;
 let mapResizeObserver: ResizeObserver | null = null;
@@ -434,9 +433,39 @@ function flyTo(p: Prospect) {
   if (m) setTimeout(() => openPopup(p, m), 600);
 }
 
-function handleLocate() {
-  if (!navigator.geolocation) return;
-  navigator.geolocation.getCurrentPosition(pos => { if (map) map.flyTo({ center: [pos.coords.longitude, pos.coords.latitude], zoom: 14 }); }, () => {}, { timeout: 5000, enableHighAccuracy: false });
+function setCurrentLocation(coordinates: [number, number]) {
+  currentLocation = coordinates;
+  if (!map) return;
+  if (!currentLocationMarker) {
+    const el = document.createElement('div');
+    el.setAttribute('aria-label', 'Your current location');
+    el.style.cssText = 'width:18px;height:18px;border-radius:50%;background:#2563eb;border:3px solid #fff;box-shadow:0 0 0 4px rgba(37,99,235,.28);position:absolute';
+    currentLocationMarker = new maplibregl.Marker({ element: el, anchor: 'center' }).setLngLat(coordinates).addTo(map);
+  } else {
+    currentLocationMarker.setLngLat(coordinates);
+  }
+}
+
+function requestCurrentLocation(flyToLocation: boolean): Promise<[number, number] | null> {
+  if (!navigator.geolocation) return Promise.resolve(null);
+  return new Promise(resolve => navigator.geolocation.getCurrentPosition(
+    pos => {
+      const coordinates: [number, number] = [pos.coords.longitude, pos.coords.latitude];
+      setCurrentLocation(coordinates);
+      if (flyToLocation && map) map.flyTo({ center: coordinates, zoom: 14 });
+      resolve(coordinates);
+    },
+    () => resolve(null),
+    { timeout: 8000, enableHighAccuracy: true, maximumAge: 60000 },
+  ));
+}
+
+async function handleLocate() {
+  const coordinates = await requestCurrentLocation(true);
+  if (!coordinates) {
+    errorMessage = 'Location wasn’t available. Check your browser permission and try again.';
+    renderPanel();
+  }
 }
 
 // ─── Shell ─────────────────────────────────────────────
@@ -654,6 +683,7 @@ function rList(p: HTMLElement) {
     <div class="panel-actions-row"><button class="btn btn-primary" id="btn-pl-add">+ Add Prospect</button><button class="btn btn-secondary" id="btn-pl-arch">📦 Archived</button><button class="btn btn-secondary" id="btn-pl-import">📋 Import</button></div>
     ${routeItems.length > 0 ? `<div class="card route-tray">
       <div class="card-title"><span>⚡ Current Route</span><span class="badge badge-pending">${routeItems.length} / ${MAX_ROUTE}</span></div>
+      <div class="route-hint">Choose up to 9 restaurants. Your current location is the route start.</div>
       <div class="route-list">${routeItems.map((x, i) => `<div class="route-item">
         <span class="route-num">${i + 1}.</span>
         <div class="route-info"><div class="route-name">${esc(x.restaurant_name)}</div><div class="route-addr">${esc(x.address_normalized || x.address_input)}</div></div>
@@ -664,7 +694,7 @@ function rList(p: HTMLElement) {
         </div>
       </div>`).join('')}</div>
       <button class="btn btn-secondary btn-full" id="btn-clear-route">Clear Route</button>
-      <button class="btn btn-primary btn-full btn-send-gmaps" id="btn-send-gmaps">⚡ Truckin' — ${routeItems.length} Stop${routeItems.length !== 1 ? 's' : ''} to Google Maps</button>
+      <button class="btn btn-primary btn-full btn-send-gmaps" id="btn-send-gmaps">🗺️ Send ${routeItems.length} Stop${routeItems.length !== 1 ? 's' : ''} to Google Maps</button>
     </div>` : ''}
     <div class="prospect-list">${loading ? '<div class="empty-state"><span class="empty-icon">⚡</span><span class="empty-text">One way or another, this darkness has got to give...</span></div>' : !prospects.length ? `<div class="empty-state"><span class="empty-icon">🌹</span><span class="empty-text">${searchQuery ? 'No matches found on this long, strange trip.' : "What a long, strange trip it's been — add your first stop."}</span></div>` : prospects.map(x => `<div class="prospect-item" data-id="${x.id}"><div class="prospect-info"><div class="prospect-name">${esc(x.restaurant_name)}</div><div class="prospect-address">${esc(x.address_normalized || x.address_input)}</div></div><div class="prospect-actions-row">${x.dropped_off ? '<span class="badge badge-dropped">🌹 Dropped</span>' : ''}<button class="btn btn-small btn-secondary pl-view" data-id="${x.id}">View</button><button class="btn btn-small btn-status ${x.dropped_off ? 'dropped' : 'pending'} pl-toggle" data-id="${x.id}" data-dr="${x.dropped_off}">${x.dropped_off ? '🌹' : 'Drop'}</button></div></div>`).join('')}</div>`;
   document.getElementById('btn-pl-add')?.addEventListener('click', () => { resetAdd(); panelView = 'panel-add'; renderPanel(); });
