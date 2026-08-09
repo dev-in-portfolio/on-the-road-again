@@ -418,6 +418,7 @@ function toggleRouteSelection(id: string) {
     const err = addToRoute(id);
     if (err) { errorMessage = err; renderPanel(); return; }
   }
+  renderPanel();
   const mk = markers.get(id); const p = getById(id);
   if (mk && p) openPopup(p, mk);
 }
