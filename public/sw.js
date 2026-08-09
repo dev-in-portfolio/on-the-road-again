@@ -1,21 +1,28 @@
-// Minimal service worker — caches static app shell, does NOT cache API responses
-const CACHE = 'otra-v1';
-const STATIC = ['/', '/index.html'];
+// App-shell service worker. Keep API responses out of the cache and always
+// check the network for navigation so a new deploy cannot strand a user on an
+// old HTML file that references deleted, hashed JavaScript assets.
+const CACHE = 'otra-v2';
+const OFFLINE_FALLBACK = '/index.html';
 
-self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(CACHE).then(c => c.addAll(STATIC)));
+self.addEventListener('install', (event) => {
+  event.waitUntil(caches.open(CACHE).then((cache) => cache.add(OFFLINE_FALLBACK)));
   self.skipWaiting();
 });
 
-self.addEventListener('activate', (e) => {
-  e.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k)))));
+self.addEventListener('activate', (event) => {
+  event.waitUntil(caches.keys().then((keys) =>
+    Promise.all(keys.filter((key) => key !== CACHE).map((key) => caches.delete(key))),
+  ));
   self.clients.claim();
 });
 
-self.addEventListener('fetch', (e) => {
-  const url = new URL(e.request.url);
-  // Never cache API calls
+self.addEventListener('fetch', (event) => {
+  const url = new URL(event.request.url);
   if (url.pathname.startsWith('/api/')) return;
-  // Cache-first for static assets
-  e.respondWith(caches.match(e.request).then(r => r || fetch(e.request)));
+
+  // HTML must be network-first. Vite fingerprints scripts on every deployment,
+  // so cache-first HTML can otherwise reference a file that no longer exists.
+  if (event.request.mode === 'navigate') {
+    event.respondWith(fetch(event.request).catch(() => caches.match(OFFLINE_FALLBACK)));
+  }
 });
