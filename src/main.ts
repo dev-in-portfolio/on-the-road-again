@@ -239,6 +239,9 @@ function handleSendToGoogleMaps() {
 let map: maplibregl.Map | null = null;
 let markers: Map<string, maplibregl.Marker> = new Map();
 let mapPopup: maplibregl.Popup | null = null;
+let mapReady = false;
+let initialMapFitApplied = false;
+let mapResizeObserver: ResizeObserver | null = null;
 
 function createMap() {
   if (map) return;
@@ -252,7 +255,36 @@ function createMap() {
     center: DEFAULT_CENTER, zoom: DEFAULT_ZOOM, attributionControl: false,
   });
   map.addControl(new maplibregl.AttributionControl({ compact: true }), 'bottom-right');
-  map.on('load', () => { refreshMarkers(); fitMap(); });
+  map.on('load', () => {
+    mapReady = true;
+    refreshMarkers();
+    applyInitialMapFit();
+  });
+
+  // The map is behind a responsive panel. Keep the WebGL canvas and DOM markers
+  // in the same coordinate space whenever that shell changes size.
+  const container = document.getElementById('map-container');
+  if (container && typeof ResizeObserver !== 'undefined') {
+    mapResizeObserver?.disconnect();
+    mapResizeObserver = new ResizeObserver(() => {
+      map?.resize();
+      refreshMarkers();
+    });
+    mapResizeObserver.observe(container);
+  }
+  window.addEventListener('resize', () => {
+    map?.resize();
+    refreshMarkers();
+  });
+  map.on('moveend', refreshMarkers);
+}
+
+function applyInitialMapFit() {
+  if (!mapReady || initialMapFitApplied || !prospects.length) return;
+  initialMapFitApplied = true;
+  map!.resize();
+  refreshMarkers();
+  fitMap();
 }
 
 function fitMap() {
@@ -393,7 +425,13 @@ async function loadData() {
   loading = true; errorMessage = null; renderPanel();
   try { prospects = await fetchProspects(searchQuery || undefined, false); }
   catch (e: unknown) { errorMessage = e instanceof Error ? e.message : 'Failed to load.'; }
-  finally { loading = false; reconcileRoute(); refreshMarkers(); renderPanel(); }
+  finally {
+    loading = false;
+    reconcileRoute();
+    refreshMarkers();
+    applyInitialMapFit();
+    renderPanel();
+  }
 }
 
 // ─── Autocomplete ──────────────────────────────────────
