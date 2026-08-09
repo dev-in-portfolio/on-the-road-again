@@ -257,9 +257,9 @@ body {
 .map-marker.marker-dropped svg { filter: drop-shadow(0 2px 4px rgba(0,0,0,0.4)); }
 
 /* ─── Popup ──────────────────────────────────────────── */
-.map-popup { font-family: var(--font-sans); min-width: 180px; }
-.popup-name { font-weight: 700; font-size: 0.9rem; margin-bottom: 2px; }
-.popup-addr { font-size: 0.8rem; color: #555; margin-bottom: 6px; }
+.map-popup { font-family: var(--font-sans); min-width: 180px; color: #2a163d; }
+.popup-name { color: #2a163d; font-weight: 700; font-size: 0.9rem; margin-bottom: 2px; }
+.popup-addr { font-size: 0.8rem; color: #4c4058; margin-bottom: 6px; }
 .popup-dropped { font-size: 0.75rem; color: #c44d6e; font-weight: 600; margin-bottom: 6px; }
 .popup-pending { font-size: 0.75rem; color: #d4740e; margin-bottom: 6px; }
 .popup-actions { display: flex; gap: 6px; }
