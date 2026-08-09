@@ -355,7 +355,22 @@ function refreshMarkers() {
       // shell has not yet applied the external MapLibre stylesheet.
       el.style.cssText = 'position:absolute;top:0;left:0;width:30px;height:40px;cursor:pointer';
       const mk = new maplibregl.Marker({ element: el, anchor: 'bottom' }).setLngLat([p.longitude, p.latitude]).addTo(map!);
-      el.addEventListener('click', () => openPopup(p, mk));
+      // MapLibre's drag surface can suppress a plain click after a pointer/touch
+      // interaction. Handle the release directly so pins work consistently on
+      // desktop and mobile, while preventing the map from swallowing it.
+      let openedFromPointer = false;
+      const openMarker = (event: Event) => {
+        event.stopPropagation();
+        openPopup(p, mk);
+      };
+      el.addEventListener('pointerup', (event) => {
+        openedFromPointer = true;
+        openMarker(event);
+        setTimeout(() => { openedFromPointer = false; }, 0);
+      });
+      el.addEventListener('click', (event) => {
+        if (!openedFromPointer) openMarker(event);
+      });
       markers.set(p.id, mk);
     }
   }
