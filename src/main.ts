@@ -287,14 +287,29 @@ function applyInitialMapFit() {
   fitMap();
 }
 
+function mapFitPadding() {
+  // The panel is an overlay, not part of the map's layout. Reserve its exact
+  // height so the opening view puts pins in the visible area above it.
+  const panelHeight = document.getElementById('panel-container')?.getBoundingClientRect().height ?? 0;
+  return { top: 72, right: 60, bottom: panelHeight + 24, left: 60 };
+}
+
 function fitMap() {
   if (!map) return;
   const v = prospects.filter(p => p.latitude != null && p.longitude != null);
   if (!v.length) { map.flyTo({ center: DEFAULT_CENTER, zoom: DEFAULT_ZOOM }); return; }
-  if (v.length === 1) { map.flyTo({ center: [v[0].longitude!, v[0].latitude!], zoom: SINGLE_ZOOM }); return; }
+  const padding = mapFitPadding();
+  if (v.length === 1) {
+    map.flyTo({
+      center: [v[0].longitude!, v[0].latitude!],
+      zoom: SINGLE_ZOOM,
+      offset: [0, -(padding.bottom - padding.top) / 2],
+    });
+    return;
+  }
   const b = new maplibregl.LngLatBounds();
   for (const p of v) b.extend([p.longitude!, p.latitude!]);
-  map.fitBounds(b, { padding: 60, maxZoom: 14 });
+  map.fitBounds(b, { padding, maxZoom: 14 });
 }
 
 function markerHTML(p: Prospect): string {
@@ -429,8 +444,9 @@ async function loadData() {
     loading = false;
     reconcileRoute();
     refreshMarkers();
-    applyInitialMapFit();
+    // Render first: fitMap uses the panel's real overlay height.
     renderPanel();
+    applyInitialMapFit();
   }
 }
 
