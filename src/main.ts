@@ -315,18 +315,20 @@ function fitMap() {
 
 function markerHTML(p: Prospect): string {
   const ri = getRouteIndex(p.id);
-  const numBadge = ri >= 0 ? `<text x="15" y="19" text-anchor="middle" fill="white" font-size="13" font-weight="bold">${ri + 1}</text>` : '';
+  const numBadge = ri >= 0 ? `<text x="15" y="19" text-anchor="middle" fill="#1a0a2e" font-size="13" font-weight="bold">${ri + 1}</text>` : '';
   if (p.dropped_off) {
-    return `<svg width="30" height="40" viewBox="0 0 30 40"><path d="M15 1C7.3 1 1 7.3 1 15c0 10 14 24 14 24s14-14 14-24C29 7.3 22.7 1 15 1z" fill="#10b981" stroke="#047857" stroke-width="1.5"/>${numBadge || '<text x="15" y="19" text-anchor="middle" fill="white" font-size="14" font-weight="bold">✓</text>'}</svg>`;
+    // Rose — Bertha skull & roses
+    return `<svg width="30" height="40" viewBox="0 0 30 40"><path d="M15 1C7.3 1 1 7.3 1 15c0 10 14 24 14 24s14-14 14-24C29 7.3 22.7 1 15 1z" fill="#c44d6e" stroke="#9b3a56" stroke-width="1.5"/>${numBadge || '<text x="15" y="19" text-anchor="middle" fill="white" font-size="14" font-weight="bold">🌹</text>'}</svg>`;
   }
-  return `<svg width="30" height="40" viewBox="0 0 30 40"><path d="M15 1C7.3 1 1 7.3 1 15c0 10 14 24 14 24s14-14 14-24C29 7.3 22.7 1 15 1z" fill="${ri >= 0 ? '#f59e0b' : '#2563eb'}" stroke="${ri >= 0 ? '#b45309' : '#1e40af'}" stroke-width="1.5"/>${numBadge || '<circle cx="15" cy="13" r="6" fill="white"/>'}</svg>`;
+  // Active: amber/burnt orange; Route: gold
+  return `<svg width="30" height="40" viewBox="0 0 30 40"><path d="M15 1C7.3 1 1 7.3 1 15c0 10 14 24 14 24s14-14 14-24C29 7.3 22.7 1 15 1z" fill="${ri >= 0 ? '#f5c842' : '#d4740e'}" stroke="${ri >= 0 ? '#b8970a' : '#9a5208'}" stroke-width="1.5"/>${numBadge || '<circle cx="15" cy="13" r="5" fill="white" opacity="0.9"/>'}</svg>`;
 }
 
 function markerAria(p: Prospect): string {
   const ri = getRouteIndex(p.id);
   const parts = [p.restaurant_name];
   if (ri >= 0) parts.unshift(`Stop ${ri + 1} —`);
-  if (p.dropped_off) parts.push('— Dropped Off');
+  if (p.dropped_off) parts.push('— 🌹 Dropped Off');
   return parts.join(' ');
 }
 
@@ -370,10 +372,10 @@ function openPopup(p: Prospect, mk: maplibregl.Marker) {
   const html = `<div class="map-popup">
     <div class="popup-name">${ri >= 0 ? `<span class="route-badge-sm">${ri + 1}</span> ` : ''}${esc(p.restaurant_name)}</div>
     <div class="popup-addr">${esc(a)}</div>
-    <div class="${p.dropped_off ? 'popup-dropped' : 'popup-pending'}">${p.dropped_off ? '✓ Dropped Off ' + (p.dropped_off_at ? new Date(p.dropped_off_at).toLocaleDateString() : '') : 'Not Dropped Off'}</div>
+    <div class="${p.dropped_off ? 'popup-dropped' : 'popup-pending'}">${p.dropped_off ? '🌹 Dropped Off ' + (p.dropped_off_at ? new Date(p.dropped_off_at).toLocaleDateString() : '') : 'Still on the road'}</div>
     <div class="popup-actions">
       <button class="popup-btn popup-btn-primary" data-act="pop-view" data-id="${p.id}">View</button>
-      <button class="popup-btn ${p.dropped_off ? 'popup-btn-dropped' : 'popup-btn-pending'}" data-act="pop-toggle" data-id="${p.id}" data-dr="${p.dropped_off}">${p.dropped_off ? 'Undo' : 'Drop'}</button>
+      <button class="popup-btn ${p.dropped_off ? 'popup-btn-dropped' : 'popup-btn-pending'}" data-act="pop-toggle" data-id="${p.id}" data-dr="${p.dropped_off}">${p.dropped_off ? 'Undo' : '🌹 Drop'}</button>
     </div>
     <div class="popup-actions" style="margin-top:4px;">
       <button class="popup-btn ${inRt ? 'popup-btn-danger' : 'popup-btn-route'}" data-act="pop-route" data-id="${p.id}">${inRt ? 'Remove from Route' : '+ Add to Route'}</button>
@@ -625,7 +627,7 @@ function rList(p: HTMLElement) {
     ${nc > 0 && !loading ? `<div class="info-banner">${nc} prospect${nc !== 1 ? 's' : ''} need${nc === 1 ? 's' : ''} an address update for the map.</div>` : ''}
     <div class="panel-actions-row"><button class="btn btn-primary" id="btn-pl-add">+ Add Prospect</button><button class="btn btn-secondary" id="btn-pl-arch">📦 Archived</button><button class="btn btn-secondary" id="btn-pl-import">📋 Import</button></div>
     ${routeItems.length > 0 ? `<div class="card route-tray">
-      <div class="card-title"><span>🚚 Current Route</span><span class="badge badge-pending">${routeItems.length} / ${MAX_ROUTE}</span></div>
+      <div class="card-title"><span>⚡ Current Route</span><span class="badge badge-pending">${routeItems.length} / ${MAX_ROUTE}</span></div>
       <div class="route-list">${routeItems.map((x, i) => `<div class="route-item">
         <span class="route-num">${i + 1}.</span>
         <div class="route-info"><div class="route-name">${esc(x.restaurant_name)}</div><div class="route-addr">${esc(x.address_normalized || x.address_input)}</div></div>
@@ -636,9 +638,9 @@ function rList(p: HTMLElement) {
         </div>
       </div>`).join('')}</div>
       <button class="btn btn-secondary btn-full" id="btn-clear-route">Clear Route</button>
-      <button class="btn btn-primary btn-full" id="btn-send-gmaps">🚀 Send ${routeItems.length} Stop${routeItems.length !== 1 ? 's' : ''} to Google Maps</button>
+      <button class="btn btn-primary btn-full btn-send-gmaps" id="btn-send-gmaps">⚡ Truckin' — ${routeItems.length} Stop${routeItems.length !== 1 ? 's' : ''} to Google Maps</button>
     </div>` : ''}
-    <div class="prospect-list">${loading ? '<div class="empty-state">Loading...</div>' : !prospects.length ? `<div class="empty-state">${searchQuery ? 'No matches.' : 'No prospects saved yet.'}</div>` : prospects.map(x => `<div class="prospect-item" data-id="${x.id}"><div class="prospect-info"><div class="prospect-name">${esc(x.restaurant_name)}</div><div class="prospect-address">${esc(x.address_normalized || x.address_input)}</div></div><div class="prospect-actions-row">${x.dropped_off ? '<span class="badge badge-dropped">Dropped</span>' : ''}<button class="btn btn-small btn-secondary pl-view" data-id="${x.id}">View</button><button class="btn btn-small btn-status ${x.dropped_off ? 'dropped' : 'pending'} pl-toggle" data-id="${x.id}" data-dr="${x.dropped_off}">${x.dropped_off ? '✓' : 'Drop'}</button></div></div>`).join('')}</div>`;
+    <div class="prospect-list">${loading ? '<div class="empty-state"><span class="empty-icon">⚡</span><span class="empty-text">One way or another, this darkness has got to give...</span></div>' : !prospects.length ? `<div class="empty-state"><span class="empty-icon">🌹</span><span class="empty-text">${searchQuery ? 'No matches found on this long, strange trip.' : "What a long, strange trip it's been — add your first stop."}</span></div>` : prospects.map(x => `<div class="prospect-item" data-id="${x.id}"><div class="prospect-info"><div class="prospect-name">${esc(x.restaurant_name)}</div><div class="prospect-address">${esc(x.address_normalized || x.address_input)}</div></div><div class="prospect-actions-row">${x.dropped_off ? '<span class="badge badge-dropped">🌹 Dropped</span>' : ''}<button class="btn btn-small btn-secondary pl-view" data-id="${x.id}">View</button><button class="btn btn-small btn-status ${x.dropped_off ? 'dropped' : 'pending'} pl-toggle" data-id="${x.id}" data-dr="${x.dropped_off}">${x.dropped_off ? '🌹' : 'Drop'}</button></div></div>`).join('')}</div>`;
   document.getElementById('btn-pl-add')?.addEventListener('click', () => { resetAdd(); panelView = 'panel-add'; renderPanel(); });
   document.getElementById('btn-pl-arch')?.addEventListener('click', () => { panelView = 'panel-archived'; renderPanel(); });
   document.getElementById('btn-pl-import')?.addEventListener('click', () => { resetImport(); panelView = 'panel-import'; renderPanel(); });
@@ -696,12 +698,12 @@ function rDetail(p: HTMLElement) {
     ${errorMessage ? `<div class="error-banner">${esc(errorMessage)}</div>` : ''}
     <div class="card"><div class="detail-section"><div class="detail-label">Address</div><div class="detail-value">${esc(a)}</div>${x.address_input !== x.address_normalized && x.address_normalized ? `<div class="detail-muted">Original: ${esc(x.address_input)}</div>` : ''}</div>
     ${x.latitude !== null ? `<div class="detail-section"><div class="detail-label">Coordinates</div><div class="detail-value detail-coords">📍 ${x.latitude.toFixed(5)}, ${x.longitude!.toFixed(5)}</div></div>` : ''}
-    <div class="detail-section"><div class="detail-label">Status</div><div class="detail-value">${x.dropped_off ? `<span class="badge badge-dropped">✓ Dropped Off</span><div class="detail-muted">${x.dropped_off_at ? new Date(x.dropped_off_at).toLocaleString() : ''}</div>` : '<span class="badge badge-pending">Not Dropped Off</span>'}</div></div>
+    <div class="detail-section"><div class="detail-label">Status</div><div class="detail-value">${x.dropped_off ? `<span class="badge badge-dropped">🌹 Dropped Off</span><div class="detail-muted">${x.dropped_off_at ? new Date(x.dropped_off_at).toLocaleString() : ''}</div>` : '<span class="badge badge-pending">Still on the road</span>'}</div></div>
     ${x.archived ? '<div class="detail-section"><div class="detail-label"></div><div class="detail-value"><span class="badge badge-archived">Archived</span></div></div>' : ''}
     <div class="detail-section"><div class="detail-label">Created</div><div class="detail-value detail-muted">${new Date(x.created_at).toLocaleString()}</div></div></div>
     <div class="card"><div class="detail-actions">
     <button class="btn btn-secondary btn-full" id="btn-dt-fly">📍 Show on Map</button>
-    ${!x.archived ? `<button class="btn ${isInRoute(x.id) ? 'btn-danger' : 'btn-primary'} btn-full" id="btn-dt-route">${isInRoute(x.id) ? 'Remove from Route' : '+ Add to Route'}</button><button class="btn btn-status ${x.dropped_off ? 'dropped' : 'pending'} btn-full" id="btn-dt-tog">${x.dropped_off ? '✓ Dropped Off — Undo' : 'Mark Dropped Off'}</button><button class="btn btn-secondary btn-full" id="btn-dt-ed">✏️ Edit</button><button class="btn btn-secondary btn-full" id="btn-dt-arch">📦 Archive</button>` : '<button class="btn btn-primary btn-full" id="btn-dt-rest">↩️ Restore</button>'}
+    ${!x.archived ? `<button class="btn ${isInRoute(x.id) ? 'btn-danger' : 'btn-primary'} btn-full" id="btn-dt-route">${isInRoute(x.id) ? 'Remove from Route' : '⚡ Add to Route'}</button><button class="btn btn-status ${x.dropped_off ? 'dropped' : 'pending'} btn-full" id="btn-dt-tog">${x.dropped_off ? '🌹 Dropped Off — Undo' : '🌹 Mark Dropped Off'}</button><button class="btn btn-secondary btn-full" id="btn-dt-ed">✏️ Edit</button><button class="btn btn-secondary btn-full" id="btn-dt-arch">📦 Archive</button>` : '<button class="btn btn-primary btn-full" id="btn-dt-rest">↩️ Restore</button>'}
     <button class="btn btn-danger btn-full" id="btn-dt-del">🗑️ Delete Permanently</button></div></div>`;
   document.getElementById('btn-bk-dt')?.addEventListener('click', () => { selectedProspectId = null; panelView = 'panel-list'; renderPanel(); });
   document.getElementById('btn-dt-fly')?.addEventListener('click', () => flyTo(x));

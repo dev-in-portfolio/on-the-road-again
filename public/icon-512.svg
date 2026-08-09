@@ -1,6 +1,12 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
-  <rect fill="#0f172a" width="512" height="512" rx="64"/>
-  <text x="256" y="240" text-anchor="middle" fill="#2563eb" font-size="64" font-family="sans-serif" font-weight="bold">🚗</text>
-  <text x="256" y="340" text-anchor="middle" fill="#f8fafc" font-size="36" font-family="sans-serif" font-weight="600">ON THE</text>
-  <text x="256" y="388" text-anchor="middle" fill="#f8fafc" font-size="36" font-family="sans-serif" font-weight="600">ROAD AGAIN</text>
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1a0a2e"/>
+      <stop offset="50%" stop-color="#120a24"/>
+      <stop offset="100%" stop-color="#0d0820"/>
+    </linearGradient>
+  </defs>
+  <rect fill="url(#bgGrad)" width="512" height="512" rx="64"/>
+  <path d="M 230 80 L 190 200 L 210 200 L 155 330 L 175 330 L 120 440 L 220 280 L 200 280 L 290 160 L 270 160 L 340 80 Z" fill="#f5c842" stroke="#d4740e" stroke-width="2" transform="translate(10,0)"/>
+  <text x="256" y="460" text-anchor="middle" fill="#f5ecd7" font-size="28" font-family="sans-serif" font-weight="600" letter-spacing="4">ON THE ROAD AGAIN</text>
 </svg>

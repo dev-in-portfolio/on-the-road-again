@@ -412,10 +412,17 @@ export default async (req: Request, _context: Context) => {
         });
       }
 
-      await db.execute({
+      const result = await db.execute({
         sql: 'DELETE FROM prospects WHERE id = ?',
         args: [id],
       });
+
+      if (result.rowsAffected === 0) {
+        return new Response(JSON.stringify({ error: 'Prospect not found.' }), {
+          status: 404,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
 
       return new Response(JSON.stringify({ success: true, deleted_id: id }), {
         status: 200,
