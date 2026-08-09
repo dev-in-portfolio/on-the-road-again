@@ -349,7 +349,9 @@ function refreshMarkers() {
       el.className = `map-marker ${p.dropped_off ? 'marker-dropped' : 'marker-active'}${rCls}`;
       el.setAttribute('aria-label', markerAria(p));
       el.innerHTML = markerHTML(p);
-      el.style.cursor = 'pointer';
+      // Inline placement keeps marker geometry correct even when a restored PWA
+      // shell has not yet applied the external MapLibre stylesheet.
+      el.style.cssText = 'position:absolute;top:0;left:0;width:30px;height:40px;cursor:pointer';
       const mk = new maplibregl.Marker({ element: el, anchor: 'bottom' }).setLngLat([p.longitude, p.latitude]).addTo(map!);
       el.addEventListener('click', () => openPopup(p, mk));
       markers.set(p.id, mk);
