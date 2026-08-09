@@ -272,6 +272,7 @@ body {
 
 /* ─── Route Tray ─────────────────────────────────────── */
 .route-tray { gap: 0.5rem; }
+.route-hint { color: var(--text-secondary); font-size: 0.76rem; }
 .route-list { display: flex; flex-direction: column; gap: 0.4rem; }
 .route-item { display: flex; align-items: center; gap: 0.5rem; padding: 0.4rem 0; border-bottom: 1px solid var(--border-color); }
 .route-item:last-child { border-bottom: none; }
