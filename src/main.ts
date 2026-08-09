@@ -363,11 +363,11 @@ function refreshMarkers() {
         event.stopPropagation();
         openPopup(p, mk);
       };
-      el.addEventListener('pointerup', (event) => {
+      el.addEventListener('pointerdown', (event) => {
         openedFromPointer = true;
         openMarker(event);
         setTimeout(() => { openedFromPointer = false; }, 0);
-      });
+      }, { capture: true });
       el.addEventListener('click', (event) => {
         if (!openedFromPointer) openMarker(event);
       });
