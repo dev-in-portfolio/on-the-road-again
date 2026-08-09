@@ -52,6 +52,19 @@ body {
 }
 #map-container .maplibregl-map { width: 100% !important; height: 100% !important; }
 
+/* Fallback for the MapLibre overlay layout. Keeping these rules local makes
+   marker positioning reliable even if a browser restores a previous PWA CSS shell. */
+#map-container .maplibregl-canvas-container {
+  position: absolute !important;
+  inset: 0 !important;
+}
+#map-container .maplibregl-marker {
+  position: absolute !important;
+  top: 0 !important;
+  left: 0 !important;
+  will-change: transform;
+}
+
 /* ─── Top Bar (Search) ───────────────────────────────── */
 #top-bar {
   position: absolute; top: 0; left: 0; right: 0; z-index: 10;
