@@ -217,7 +217,7 @@ body {
 .error-banner { background: rgba(239,68,68,0.15); border: 1px solid rgba(239,68,68,0.4); color: #fca5a5; padding: 0.6rem 0.85rem; border-radius: var(--radius-sm); font-size: 0.8rem; }
 
 /* ─── Map Markers ────────────────────────────────────── */
-.map-marker { cursor: pointer; }
+.map-marker { width: 30px; height: 40px; cursor: pointer; }
 .map-marker.marker-active svg { filter: drop-shadow(0 2px 4px rgba(0,0,0,0.4)); }
 .map-marker.marker-dropped svg { filter: drop-shadow(0 2px 4px rgba(0,0,0,0.4)); }
 
