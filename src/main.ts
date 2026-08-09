@@ -291,7 +291,7 @@ function mapFitPadding() {
   // The panel is an overlay, not part of the map's layout. Reserve its exact
   // height so the opening view puts pins in the visible area above it.
   const panelHeight = document.getElementById('panel-container')?.getBoundingClientRect().height ?? 0;
-  return { top: 72, right: 60, bottom: panelHeight + 24, left: 60 };
+  return { top: 72, right: 60, bottom: panelHeight + 84, left: 60 };
 }
 
 function fitMap() {
