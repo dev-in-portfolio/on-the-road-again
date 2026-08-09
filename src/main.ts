@@ -221,16 +221,28 @@ function buildGoogleMapsUrl(origin: [number, number] | null): string | { error: 
 }
 
 async function handleSendToGoogleMaps() {
+  // Open immediately while this is still a direct user click. Waiting for the
+  // location permission prompt first causes browsers to block the Maps tab.
+  const mapsWindow = window.open('', '_blank');
+  if (mapsWindow) mapsWindow.opener = null;
+
   // Ask only when the user sends a route. Google Maps still opens if permission
   // is declined, using its own current-location setting.
   const origin = currentLocation || await requestCurrentLocation(false);
   const result = buildGoogleMapsUrl(origin);
   if (typeof result === 'object' && 'error' in result) {
+    mapsWindow?.close();
     errorMessage = result.error;
     renderPanel();
     return;
   }
-  window.open(result, '_blank', 'noopener');
+
+  if (mapsWindow) {
+    mapsWindow.location.replace(result);
+  } else {
+    // A strict browser may still refuse a new tab; keep the route usable.
+    window.location.assign(result);
+  }
 }
 
 // ─── Map ───────────────────────────────────────────────
