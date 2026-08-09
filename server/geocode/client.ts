@@ -90,7 +90,7 @@ export async function geocodeAutocomplete(
   text: string
 ): Promise<AutocompleteSuggestion[]> {
   const apiKey = getApiKey();
-  const url = `${GEOAPIFY_BASE}/autocomplete?text=${encodeURIComponent(text)}&apiKey=${apiKey}&format=json&limit=5`;
+  const url = `${GEOAPIFY_BASE}/autocomplete?text=${encodeURIComponent(text)}&apiKey=${apiKey}&format=geojson&limit=5`;
 
   const res = await fetch(url);
   if (!res.ok) {
@@ -116,7 +116,7 @@ export async function geocodeSearch(
   text: string
 ): Promise<GeocodeResult[]> {
   const apiKey = getApiKey();
-  const url = `${GEOAPIFY_BASE}/search?text=${encodeURIComponent(text)}&apiKey=${apiKey}&format=json&limit=3`;
+  const url = `${GEOAPIFY_BASE}/search?text=${encodeURIComponent(text)}&apiKey=${apiKey}&format=geojson&limit=3`;
 
   const res = await fetch(url);
   if (!res.ok) {
