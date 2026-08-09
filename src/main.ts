@@ -17,7 +17,7 @@ let loading = true;
 let errorMessage: string | null = null;
 let submitting = false;
 
-type View = 'panel-list' | 'panel-add' | 'panel-detail' | 'panel-edit' | 'panel-archived';
+type View = 'panel-list' | 'panel-add' | 'panel-detail' | 'panel-edit' | 'panel-archived' | 'panel-import';
 let panelView: View = 'panel-list';
 let selectedProspectId: string | null = null;
 let searchQuery = '';
@@ -36,6 +36,118 @@ let edDups: Prospect[] = [];
 let edStep: 'entry' | 'confirm' | 'duplicate' = 'entry';
 let edAcSug: AutocompleteSuggestion[] = [], edAcVis = false;
 let edAcAbort: AbortController | null = null, edAcTimer: ReturnType<typeof setTimeout> | null = null;
+
+// ─── Import State ──────────────────────────────────────
+type ImportRow = { name: string; address: string; status: 'pending' | 'geocoding' | 'ready' | 'duplicate' | 'needs_review' | 'error' | 'imported'; normalized?: string; lat?: number; lon?: number; placeId?: string; errorMsg?: string; duplicates?: Prospect[]; };
+let importRows: ImportRow[] = [];
+let importPhase: 'paste' | 'preview' | 'geocoding' | 'results' = 'paste';
+let importText = '';
+let importRunning = false;
+const IMPORT_CONCURRENCY = 3;
+
+function parseImportText(text: string): ImportRow[] {
+  const lines = text.split(/\r?\n/).filter(l => l.trim());
+  const rows: ImportRow[] = [];
+  let headerSkipped = false;
+  for (const line of lines) {
+    // Try common delimiters: | , tab
+    let parts: string[] | null = null;
+    if (line.includes('|')) parts = line.split('|');
+    else if (line.includes('\t')) parts = line.split('\t');
+    else if (line.includes(',')) {
+      // Only use comma if | and tab not found, and there are exactly 2+ parts
+      const csvParts = line.split(',');
+      if (csvParts.length >= 2) parts = csvParts;
+    }
+    if (!parts || parts.length < 2) continue;
+
+    const name = parts[0].trim();
+    const address = parts.slice(1).join(' ').trim().replace(/\s+/g, ' ');
+    if (!name || !address) continue;
+
+    // Skip header row
+    if (!headerSkipped && rows.length === 0 &&
+        /^(restaurant|business|name|商户|店名)/i.test(name) &&
+        /^(address|addr|地址|street)/i.test(address)) {
+      headerSkipped = true;
+      continue;
+    }
+    headerSkipped = true;
+
+    rows.push({ name, address, status: 'pending' });
+  }
+  return rows;
+}
+
+async function runImportGeocodeBatch() {
+  importRunning = true; importPhase = 'geocoding';
+  renderPanel();
+
+  const pending = importRows.filter(r => r.status === 'pending');
+  for (let i = 0; i < pending.length; i += IMPORT_CONCURRENCY) {
+    const batch = pending.slice(i, i + IMPORT_CONCURRENCY);
+    await Promise.all(batch.map(async (row) => {
+      row.status = 'geocoding'; renderPanel();
+      try {
+        const result = await geocodeSearch(row.address);
+        if (result.results.length > 0 && result.isPrecise) {
+          row.normalized = result.best.formatted;
+          row.lat = result.best.lat; row.lon = result.best.lon;
+          row.placeId = result.best.placeId;
+          row.status = 'ready';
+        } else {
+          row.status = 'needs_review';
+          row.errorMsg = result.results.length > 0 ? 'Address too broad.' : 'Could not locate.';
+        }
+      } catch (e: unknown) {
+        row.status = 'error';
+        row.errorMsg = e instanceof Error ? e.message : 'Geocoding failed.';
+      }
+    }));
+    renderPanel();
+  }
+  importRunning = false; importPhase = 'results'; renderPanel();
+}
+
+async function saveImportRows() {
+  const ready = importRows.filter(r => r.status === 'ready');
+  if (!ready.length) return;
+  importRunning = true; renderPanel();
+  let saved = 0; let duped = 0;
+  for (const row of ready) {
+    if (row.status !== 'ready') continue;
+    try {
+      const result = await createProspect({
+        restaurant_name: row.name,
+        address_input: row.address,
+        address_normalized: row.normalized || null,
+        latitude: row.lat ?? null,
+        longitude: row.lon ?? null,
+        geocode_provider: row.lat != null ? 'Geoapify' : null,
+        geocode_reference: row.placeId || null,
+      });
+      if ('code' in result && result.code === 'DUPLICATE_DETECTED') {
+        row.status = 'duplicate';
+        row.duplicates = result.duplicates;
+        duped++;
+      } else {
+        row.status = 'imported';
+        prospects.unshift(result as Prospect);
+        saved++;
+      }
+    } catch (e: unknown) {
+      row.status = 'error';
+      row.errorMsg = e instanceof Error ? e.message : 'Save failed.';
+    }
+    renderPanel();
+  }
+  if (saved > 0) refreshMarkers();
+  importRunning = false; renderPanel();
+}
+
+function resetImport() {
+  importRows = []; importPhase = 'paste'; importText = ''; importRunning = false;
+}
 
 // ─── Route State ───────────────────────────────────────
 const ROUTE_KEY = 'otra.currentRoute';
@@ -445,7 +557,7 @@ function getById(id: string): Prospect | undefined { return prospects.find(p => 
 // ─── Panel Render ──────────────────────────────────────
 function renderPanel() {
   const p = document.getElementById('panel-container'); if (!p) return;
-  switch (panelView) { case 'panel-list': rList(p); break; case 'panel-add': rAdd(p); break; case 'panel-detail': rDetail(p); break; case 'panel-edit': rEdit(p); break; case 'panel-archived': rArch(p); break; }
+  switch (panelView) { case 'panel-list': rList(p); break; case 'panel-add': rAdd(p); break; case 'panel-detail': rDetail(p); break; case 'panel-edit': rEdit(p); break; case 'panel-archived': rArch(p); break; case 'panel-import': rImport(p); break; }
 }
 
 function rList(p: HTMLElement) {
@@ -454,7 +566,7 @@ function rList(p: HTMLElement) {
   p.innerHTML = `<div class="panel-header"><h1 class="app-title">ON THE ROAD AGAIN</h1><p class="app-subtitle">${prospects.length} prospect${prospects.length !== 1 ? 's' : ''}</p></div>
     ${errorMessage ? `<div class="error-banner">${esc(errorMessage)}</div>` : ''}
     ${nc > 0 && !loading ? `<div class="info-banner">${nc} prospect${nc !== 1 ? 's' : ''} need${nc === 1 ? 's' : ''} an address update for the map.</div>` : ''}
-    <div class="panel-actions-row"><button class="btn btn-primary" id="btn-pl-add">+ Add Prospect</button><button class="btn btn-secondary" id="btn-pl-arch">📦 Archived</button></div>
+    <div class="panel-actions-row"><button class="btn btn-primary" id="btn-pl-add">+ Add Prospect</button><button class="btn btn-secondary" id="btn-pl-arch">📦 Archived</button><button class="btn btn-secondary" id="btn-pl-import">📋 Import</button></div>
     ${routeItems.length > 0 ? `<div class="card route-tray">
       <div class="card-title"><span>🚚 Current Route</span><span class="badge badge-pending">${routeItems.length} / ${MAX_ROUTE}</span></div>
       <div class="route-list">${routeItems.map((x, i) => `<div class="route-item">
@@ -472,6 +584,7 @@ function rList(p: HTMLElement) {
     <div class="prospect-list">${loading ? '<div class="empty-state">Loading...</div>' : !prospects.length ? `<div class="empty-state">${searchQuery ? 'No matches.' : 'No prospects saved yet.'}</div>` : prospects.map(x => `<div class="prospect-item" data-id="${x.id}"><div class="prospect-info"><div class="prospect-name">${esc(x.restaurant_name)}</div><div class="prospect-address">${esc(x.address_normalized || x.address_input)}</div></div><div class="prospect-actions-row">${x.dropped_off ? '<span class="badge badge-dropped">Dropped</span>' : ''}<button class="btn btn-small btn-secondary pl-view" data-id="${x.id}">View</button><button class="btn btn-small btn-status ${x.dropped_off ? 'dropped' : 'pending'} pl-toggle" data-id="${x.id}" data-dr="${x.dropped_off}">${x.dropped_off ? '✓' : 'Drop'}</button></div></div>`).join('')}</div>`;
   document.getElementById('btn-pl-add')?.addEventListener('click', () => { resetAdd(); panelView = 'panel-add'; renderPanel(); });
   document.getElementById('btn-pl-arch')?.addEventListener('click', () => { panelView = 'panel-archived'; renderPanel(); });
+  document.getElementById('btn-pl-import')?.addEventListener('click', () => { resetImport(); panelView = 'panel-import'; renderPanel(); });
   document.getElementById('btn-clear-route')?.addEventListener('click', clearRoute);
   document.getElementById('btn-send-gmaps')?.addEventListener('click', handleSendToGoogleMaps);
   p.querySelectorAll('.route-up').forEach(b => b.addEventListener('click', () => moveRouteItem(parseInt(b.getAttribute('data-idx')!), -1)));
@@ -585,6 +698,94 @@ function rArch(p: HTMLElement) {
     ${!ar.length ? '<div class="empty-state">No archived prospects.</div>' : `<div class="prospect-list">${ar.map(x => `<div class="prospect-item" data-id="${x.id}"><div class="prospect-info"><div class="prospect-name">${esc(x.restaurant_name)}</div><div class="prospect-address">${esc(x.address_normalized || x.address_input)}</div></div><div class="prospect-actions-row"><button class="btn btn-small btn-primary ar-rest" data-id="${x.id}">Restore</button></div></div>`).join('')}</div>`}</div>`;
   document.getElementById('btn-bk-ar')?.addEventListener('click', () => { panelView = 'panel-list'; renderPanel(); });
   p.querySelectorAll('.ar-rest').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); handleRestore(b.getAttribute('data-id')!); }));
+}
+
+// ─── Render: Import ─────────────────────────────────────
+function rImport(p: HTMLElement) {
+  // Paste phase
+  if (importPhase === 'paste') {
+    p.innerHTML = `<div class="panel-header"><button class="btn btn-back" id="btn-cx-imp">← Back</button><h1 class="app-title" style="font-size:1.15rem;">Bulk Import</h1></div>
+      <div class="card">
+        <p class="form-hint" style="margin-bottom:0.5rem;">Paste restaurant name and address pairs, one per line. Use <code>|</code>, comma, or tab as separator.</p>
+        <textarea id="import-textarea" class="form-input" style="min-height:180px;font-size:0.85rem;resize:vertical;" placeholder="Alexander Michael's | 401 W 9th St, Charlotte, NC 28202&#10;Lupie's Cafe | 2718 Monroe Rd, Charlotte, NC 28205&#10;The Garrison | 314 Main St, Pineville, NC 28134">${esc(importText)}</textarea>
+        <div class="btn-row">
+          <button class="btn btn-secondary" id="btn-cancel-imp" style="flex:1;">Cancel</button>
+          <button class="btn btn-primary" id="btn-parse-imp" style="flex:1;">Parse & Preview</button>
+        </div>
+      </div>`;
+    document.getElementById('btn-cx-imp')?.addEventListener('click', () => { panelView = 'panel-list'; renderPanel(); });
+    document.getElementById('btn-cancel-imp')?.addEventListener('click', () => { panelView = 'panel-list'; renderPanel(); });
+    document.getElementById('btn-parse-imp')?.addEventListener('click', () => {
+      importText = (document.getElementById('import-textarea') as HTMLTextAreaElement).value;
+      importRows = parseImportText(importText);
+      if (!importRows.length) { errorMessage = 'No valid rows found. Use format: Name | Address'; renderPanel(); return; }
+      errorMessage = null; importPhase = 'preview'; renderPanel();
+    });
+    return;
+  }
+
+  // Preview phase
+  if (importPhase === 'preview') {
+    p.innerHTML = `<div class="panel-header"><button class="btn btn-back" id="btn-bk-imp-prev">← Edit</button><h1 class="app-title" style="font-size:1.15rem;">Preview (${importRows.length} rows)</h1></div>
+      <div class="card">
+        <div class="import-preview">${importRows.map((r, i) => `<div class="import-row"><span class="route-num">${i + 1}.</span><div><div class="route-name">${esc(r.name)}</div><div class="route-addr">${esc(r.address)}</div></div></div>`).join('')}</div>
+        <div class="btn-row">
+          <button class="btn btn-secondary" id="btn-imp-back" style="flex:1;">Edit</button>
+          <button class="btn btn-primary" id="btn-imp-geocode" style="flex:1;">Geocode ${importRows.length} Address${importRows.length !== 1 ? 'es' : ''}</button>
+        </div>
+      </div>`;
+    document.getElementById('btn-bk-imp-prev')?.addEventListener('click', () => { importPhase = 'paste'; renderPanel(); });
+    document.getElementById('btn-imp-back')?.addEventListener('click', () => { importPhase = 'paste'; renderPanel(); });
+    document.getElementById('btn-imp-geocode')?.addEventListener('click', () => runImportGeocodeBatch());
+    return;
+  }
+
+  // Geocoding phase
+  if (importPhase === 'geocoding') {
+    const done = importRows.filter(r => r.status !== 'pending' && r.status !== 'geocoding').length;
+    const geo = importRows.filter(r => r.status === 'geocoding').length;
+    p.innerHTML = `<div class="panel-header"><h1 class="app-title" style="font-size:1.15rem;">Geocoding...</h1></div>
+      <div class="card">
+        <div class="empty-state">${done} / ${importRows.length} processed${geo > 0 ? ` (${geo} in progress...)` : ''}</div>
+        <div class="progress-bar"><div class="progress-fill" style="width:${importRows.length ? Math.round(done / importRows.length * 100) : 0}%"></div></div>
+      </div>`;
+    return;
+  }
+
+  // Results phase
+  const ready = importRows.filter(r => r.status === 'ready').length;
+  const dupes = importRows.filter(r => r.status === 'duplicate').length;
+  const review = importRows.filter(r => r.status === 'needs_review').length;
+  const errors = importRows.filter(r => r.status === 'error').length;
+  const imported = importRows.filter(r => r.status === 'imported').length;
+
+  p.innerHTML = `<div class="panel-header"><button class="btn btn-back" id="btn-cx-imp-res">← Back</button><h1 class="app-title" style="font-size:1.15rem;">Import Results</h1></div>
+    ${imported > 0 ? `<div class="info-banner">✅ ${imported} imported successfully!</div>` : ''}
+    <div class="card">
+      <div class="import-summary">
+        <div>✅ <b>${ready}</b> ready to import</div>
+        ${dupes > 0 ? `<div>⚠️ <b>${dupes}</b> duplicates</div>` : ''}
+        ${review > 0 ? `<div>🔍 <b>${review}</b> need review</div>` : ''}
+        ${errors > 0 ? `<div>❌ <b>${errors}</b> failed</div>` : ''}
+      </div>
+      <div class="import-row-list">${importRows.map((r, i) => {
+        let badge = '';
+        if (r.status === 'ready') badge = '<span class="badge badge-pending">Ready</span>';
+        else if (r.status === 'imported') badge = '<span class="badge badge-dropped">✓</span>';
+        else if (r.status === 'duplicate') badge = '<span class="badge badge-pending">Duplicate</span>';
+        else if (r.status === 'needs_review') badge = '<span class="badge badge-pending">Review</span>';
+        else if (r.status === 'error') badge = '<span class="badge badge-archived">Error</span>';
+        const addr = r.normalized || r.address;
+        return `<div class="import-row"><span class="route-num">${i + 1}.</span><div style="flex:1;min-width:0;"><div class="route-name">${esc(r.name)} ${badge}</div><div class="route-addr">${esc(addr)}</div>${r.errorMsg ? `<div class="detail-muted" style="color:#fca5a5;">${esc(r.errorMsg)}</div>` : ''}</div></div>`;
+      }).join('')}</div>
+      <div class="btn-row">
+        <button class="btn btn-secondary" id="btn-imp-done" style="flex:1;">Done</button>
+        ${ready > 0 ? `<button class="btn btn-primary" id="btn-imp-save" style="flex:1;" ${importRunning ? 'disabled' : ''}>${importRunning ? 'Saving...' : `Save ${ready} Prospect${ready !== 1 ? 's' : ''}`}</button>` : ''}
+      </div>
+    </div>`;
+  document.getElementById('btn-cx-imp-res')?.addEventListener('click', () => { panelView = 'panel-list'; renderPanel(); });
+  document.getElementById('btn-imp-done')?.addEventListener('click', () => { panelView = 'panel-list'; renderPanel(); });
+  document.getElementById('btn-imp-save')?.addEventListener('click', saveImportRows);
 }
 
 function esc(s: string): string { return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;'); }
