@@ -396,10 +396,20 @@ function openPopup(p: Prospect, mk: maplibregl.Marker) {
       <button class="popup-btn ${inRt ? 'popup-btn-danger' : 'popup-btn-route'}" data-act="pop-route" data-id="${p.id}">${inRt ? 'Remove from Route' : '+ Add to Route'}</button>
     </div></div>`;
   mapPopup = new maplibregl.Popup({ offset: [0, -32], closeButton: true, maxWidth: '280px' }).setLngLat(mk.getLngLat()).setHTML(html).addTo(map);
-  mapPopup.on('open', () => {
-    document.querySelector('[data-act="pop-view"]')?.addEventListener('click', (e) => { const id = (e.target as HTMLElement).getAttribute('data-id'); if (id) { selectedProspectId = id; panelView = 'panel-detail'; renderPanel(); } });
-    document.querySelector('[data-act="pop-toggle"]')?.addEventListener('click', (e) => { const id = (e.target as HTMLElement).getAttribute('data-id'); const dr = (e.target as HTMLElement).getAttribute('data-dr') === 'true'; if (id) mapToggleDropped(id, dr); });
-    document.querySelector('[data-act="pop-route"]')?.addEventListener('click', (e) => { const id = (e.target as HTMLElement).getAttribute('data-id'); if (id) toggleRouteSelection(id); });
+  // addTo() fires the popup's open event synchronously, so bind directly to
+  // the created popup element rather than subscribing after that event.
+  const popupElement = mapPopup.getElement();
+  popupElement?.querySelector('[data-act="pop-view"]')?.addEventListener('click', (event) => {
+    event.stopPropagation();
+    selectedProspectId = p.id; panelView = 'panel-detail'; renderPanel();
+  });
+  popupElement?.querySelector('[data-act="pop-toggle"]')?.addEventListener('click', (event) => {
+    event.stopPropagation();
+    mapToggleDropped(p.id, p.dropped_off);
+  });
+  popupElement?.querySelector('[data-act="pop-route"]')?.addEventListener('click', (event) => {
+    event.stopPropagation();
+    toggleRouteSelection(p.id);
   });
 }
 
