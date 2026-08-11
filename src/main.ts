@@ -1,5 +1,4 @@
-import * as maplibregl from 'maplibre-gl';
-import 'maplibre-gl/dist/maplibre-gl.css';
+import type * as maplibregl from 'maplibre-gl';
 import {
   fetchProspects, createProspect, updateProspect,
   toggleDroppedOff, archiveProspect, restoreProspect, deleteProspect,
@@ -14,7 +13,9 @@ const SINGLE_ZOOM = 15;
 
 // ─── State ─────────────────────────────────────────────
 let prospects: Prospect[] = [];
+let archivedProspects: Prospect[] = [];
 let loading = true;
+let archivedLoading = false;
 let errorMessage: string | null = null;
 let submitting = false;
 
@@ -247,6 +248,8 @@ async function handleSendToGoogleMaps() {
 
 // ─── Map ───────────────────────────────────────────────
 let map: maplibregl.Map | null = null;
+let maplibreglModule: typeof maplibregl | null = null;
+let mapLoading = false;
 let markers: Map<string, maplibregl.Marker> = new Map();
 let mapPopup: maplibregl.Popup | null = null;
 let currentLocation: [number, number] | null = null;
@@ -255,9 +258,23 @@ let mapReady = false;
 let initialMapFitApplied = false;
 let mapResizeObserver: ResizeObserver | null = null;
 
-function createMap() {
-  if (map) return;
-  map = new maplibregl.Map({
+async function createMap() {
+  if (map || mapLoading) return;
+  mapLoading = true;
+  try {
+    [maplibreglModule] = await Promise.all([
+      import('maplibre-gl'),
+      import('maplibre-gl/dist/maplibre-gl.css'),
+    ]);
+  } catch {
+    errorMessage = 'The map could not be loaded. Please refresh and try again.';
+    renderPanel();
+    return;
+  } finally {
+    mapLoading = false;
+  }
+
+  map = new maplibreglModule!.Map({
     container: 'map-container',
     style: {
       version: 8,
@@ -266,7 +283,7 @@ function createMap() {
     },
     center: DEFAULT_CENTER, zoom: DEFAULT_ZOOM, attributionControl: false,
   });
-  map.addControl(new maplibregl.AttributionControl({ compact: true }), 'bottom-right');
+  map.addControl(new maplibreglModule!.AttributionControl({ compact: true }), 'bottom-right');
   map.on('load', () => {
     mapReady = true;
     refreshMarkers();
@@ -319,7 +336,7 @@ function fitMap() {
     });
     return;
   }
-  const b = new maplibregl.LngLatBounds();
+  const b = new maplibreglModule!.LngLatBounds();
   for (const p of v) b.extend([p.longitude!, p.latitude!]);
   map.fitBounds(b, { padding, maxZoom: 14 });
 }
@@ -365,7 +382,7 @@ function refreshMarkers() {
       // Inline placement keeps marker geometry correct even when a restored PWA
       // shell has not yet applied the external MapLibre stylesheet.
       el.style.cssText = 'position:absolute;top:0;left:0;width:30px;height:40px;cursor:pointer';
-      const mk = new maplibregl.Marker({ element: el, anchor: 'bottom' }).setLngLat([p.longitude, p.latitude]).addTo(map!);
+      const mk = new maplibreglModule!.Marker({ element: el, anchor: 'bottom' }).setLngLat([p.longitude, p.latitude]).addTo(map!);
       // MapLibre's drag surface can suppress a plain click after a pointer/touch
       // interaction. Handle the release directly so pins work consistently on
       // desktop and mobile, while preventing the map from swallowing it.
@@ -406,7 +423,7 @@ function openPopup(p: Prospect, mk: maplibregl.Marker) {
     <div class="popup-actions" style="margin-top:4px;">
       <button class="popup-btn ${inRt ? 'popup-btn-danger' : 'popup-btn-route'}" data-act="pop-route" data-id="${p.id}">${inRt ? 'Remove from Route' : '+ Add to Route'}</button>
     </div></div>`;
-  mapPopup = new maplibregl.Popup({ offset: [0, -32], closeButton: true, maxWidth: '280px' }).setLngLat(mk.getLngLat()).setHTML(html).addTo(map);
+  mapPopup = new maplibreglModule!.Popup({ offset: [0, -32], closeButton: true, maxWidth: '280px' }).setLngLat(mk.getLngLat()).setHTML(html).addTo(map);
   // addTo() fires the popup's open event synchronously, so bind directly to
   // the created popup element rather than subscribing after that event.
   const popupElement = mapPopup.getElement();
@@ -452,7 +469,7 @@ function setCurrentLocation(coordinates: [number, number]) {
     const el = document.createElement('div');
     el.setAttribute('aria-label', 'Your current location');
     el.style.cssText = 'width:18px;height:18px;border-radius:50%;background:#2563eb;border:3px solid #fff;box-shadow:0 0 0 4px rgba(37,99,235,.28);position:absolute';
-    currentLocationMarker = new maplibregl.Marker({ element: el, anchor: 'center' }).setLngLat(coordinates).addTo(map);
+    currentLocationMarker = new maplibreglModule!.Marker({ element: el, anchor: 'center' }).setLngLat(coordinates).addTo(map);
   } else {
     currentLocationMarker.setLngLat(coordinates);
   }
@@ -484,7 +501,6 @@ async function handleLocate() {
 function setupShell() {
   const app = document.getElementById('app')!;
   app.innerHTML = `<div id="map-container"></div><div id="top-bar"><div id="search-bar"></div></div><div id="panel-container"></div>`;
-  createMap();
   setupMapControls();
   renderPanel();
   updateSearchBar();
@@ -514,11 +530,28 @@ async function loadData() {
   catch (e: unknown) { errorMessage = e instanceof Error ? e.message : 'Failed to load.'; }
   finally {
     loading = false;
+    void createMap();
     reconcileRoute();
     refreshMarkers();
     // Render first: fitMap uses the panel's real overlay height.
     renderPanel();
     applyInitialMapFit();
+  }
+}
+
+async function showArchived() {
+  panelView = 'panel-archived';
+  archivedLoading = true;
+  errorMessage = null;
+  renderPanel();
+  try {
+    const allProspects = await fetchProspects(undefined, true);
+    archivedProspects = allProspects.filter((prospect) => prospect.archived);
+  } catch (e: unknown) {
+    errorMessage = e instanceof Error ? e.message : 'Failed to load archived prospects.';
+  } finally {
+    archivedLoading = false;
+    renderPanel();
   }
 }
 
@@ -663,12 +696,24 @@ async function handleToggleDropped(id: string, cur: boolean) {
 }
 
 async function handleArchive(id: string) {
-  try { await archiveProspect(id); removeFromRoute(id); prospects = prospects.filter(p => p.id !== id); refreshMarkers(); if (selectedProspectId === id) { selectedProspectId = null; panelView = 'panel-list'; } renderPanel(); }
+  try {
+    const archived = await archiveProspect(id);
+    archivedProspects = [archived, ...archivedProspects.filter(p => p.id !== id)];
+    removeFromRoute(id); prospects = prospects.filter(p => p.id !== id); refreshMarkers();
+    if (selectedProspectId === id) { selectedProspectId = null; panelView = 'panel-list'; }
+    renderPanel();
+  }
   catch (e: unknown) { errorMessage = e instanceof Error ? e.message : 'Failed.'; renderPanel(); }
 }
 
 async function handleRestore(id: string) {
-  try { const u = await restoreProspect(id); prospects.unshift(u); refreshMarkers(); if (selectedProspectId === id) { selectedProspectId = id; panelView = 'panel-detail'; } renderPanel(); }
+  try {
+    const u = await restoreProspect(id);
+    archivedProspects = archivedProspects.filter(p => p.id !== id);
+    prospects.unshift(u); refreshMarkers();
+    if (selectedProspectId === id) { selectedProspectId = id; panelView = 'panel-detail'; }
+    renderPanel();
+  }
   catch (e: unknown) { errorMessage = e instanceof Error ? e.message : 'Failed.'; renderPanel(); }
 }
 
@@ -710,7 +755,7 @@ function rList(p: HTMLElement) {
     </div>` : ''}
     <div class="prospect-list">${loading ? '<div class="empty-state"><span class="empty-icon">⚡</span><span class="empty-text">One way or another, this darkness has got to give...</span></div>' : !prospects.length ? `<div class="empty-state"><span class="empty-icon">🌹</span><span class="empty-text">${searchQuery ? 'No matches found on this long, strange trip.' : "What a long, strange trip it's been — add your first stop."}</span></div>` : prospects.map(x => `<div class="prospect-item" data-id="${x.id}"><div class="prospect-info"><div class="prospect-name">${esc(x.restaurant_name)}</div><div class="prospect-address">${esc(x.address_normalized || x.address_input)}</div></div><div class="prospect-actions-row">${x.dropped_off ? '<span class="badge badge-dropped">🌹 Dropped</span>' : ''}<button class="btn btn-small btn-secondary pl-view" data-id="${x.id}">View</button><button class="btn btn-small btn-status ${x.dropped_off ? 'dropped' : 'pending'} pl-toggle" data-id="${x.id}" data-dr="${x.dropped_off}">${x.dropped_off ? '🌹' : 'Drop'}</button></div></div>`).join('')}</div>`;
   document.getElementById('btn-pl-add')?.addEventListener('click', () => { resetAdd(); panelView = 'panel-add'; renderPanel(); });
-  document.getElementById('btn-pl-arch')?.addEventListener('click', () => { panelView = 'panel-archived'; renderPanel(); });
+  document.getElementById('btn-pl-arch')?.addEventListener('click', () => { void showArchived(); });
   document.getElementById('btn-pl-import')?.addEventListener('click', () => { resetImport(); panelView = 'panel-import'; renderPanel(); });
   document.getElementById('btn-clear-route')?.addEventListener('click', clearRoute);
   document.getElementById('btn-send-gmaps')?.addEventListener('click', handleSendToGoogleMaps);
@@ -819,10 +864,10 @@ function rEditDup(p: HTMLElement) {
 }
 
 function rArch(p: HTMLElement) {
-  const ar = prospects.filter(x => x.archived);
+  const ar = archivedProspects;
   p.innerHTML = `<div class="panel-header"><button class="btn btn-back" id="btn-bk-ar">← Back</button><h1 class="app-title" style="font-size:1.15rem;">Archived</h1></div>
-    <div class="card"><div class="card-title"><span>Archived</span><span class="badge badge-pending">${ar.length} archived</span></div>
-    ${!ar.length ? '<div class="empty-state">No archived prospects.</div>' : `<div class="prospect-list">${ar.map(x => `<div class="prospect-item" data-id="${x.id}"><div class="prospect-info"><div class="prospect-name">${esc(x.restaurant_name)}</div><div class="prospect-address">${esc(x.address_normalized || x.address_input)}</div></div><div class="prospect-actions-row"><button class="btn btn-small btn-primary ar-rest" data-id="${x.id}">Restore</button></div></div>`).join('')}</div>`}</div>`;
+    <div class="card"><div class="card-title"><span>Archived</span><span class="badge badge-pending">${archivedLoading ? 'Loading...' : `${ar.length} archived`}</span></div>
+    ${archivedLoading ? '<div class="empty-state">Loading archived prospects...</div>' : !ar.length ? '<div class="empty-state">No archived prospects.</div>' : `<div class="prospect-list">${ar.map(x => `<div class="prospect-item" data-id="${x.id}"><div class="prospect-info"><div class="prospect-name">${esc(x.restaurant_name)}</div><div class="prospect-address">${esc(x.address_normalized || x.address_input)}</div></div><div class="prospect-actions-row"><button class="btn btn-small btn-primary ar-rest" data-id="${x.id}">Restore</button></div></div>`).join('')}</div>`}</div>`;
   document.getElementById('btn-bk-ar')?.addEventListener('click', () => { panelView = 'panel-list'; renderPanel(); });
   p.querySelectorAll('.ar-rest').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); handleRestore(b.getAttribute('data-id')!); }));
 }
