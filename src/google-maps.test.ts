@@ -23,7 +23,7 @@ describe('buildGoogleMapsDirectionsUrl', () => {
 
     assert.equal(url.searchParams.get('waypoints'), '35.1,-80.1|35.2,-80.2|35.3,-80.3');
     assert.equal(url.searchParams.get('destination'), '35.4,-80.4');
-    assert.equal(url.searchParams.get('dir_action'), 'navigate');
+    assert.equal(url.searchParams.has('dir_action'), false);
   });
 
   it('converts a cached [longitude, latitude] origin for Google Maps', () => {
