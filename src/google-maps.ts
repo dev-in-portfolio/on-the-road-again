@@ -14,7 +14,6 @@ export function buildGoogleMapsDirectionsUrl(
   const params = new URLSearchParams({
     api: '1',
     travelmode: 'driving',
-    dir_action: 'navigate',
     destination: `${destination.latitude},${destination.longitude}`,
   });
 
