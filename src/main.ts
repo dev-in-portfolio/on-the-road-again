@@ -5,6 +5,7 @@ import {
   geocodeAutocomplete, geocodeSearch,
 } from './api/client';
 import { Prospect, AutocompleteSuggestion, CreateProspectInput } from './types/prospect';
+import { buildGoogleMapsDirectionsUrl } from './google-maps';
 
 // ─── Constants ─────────────────────────────────────────
 const DEFAULT_CENTER: [number, number] = [-95.7129, 37.0902];
@@ -209,41 +210,29 @@ function buildGoogleMapsUrl(origin: [number, number] | null): string | { error: 
     return { error: `${invalid[0].restaurant_name} needs a valid mapped address before this route can be sent.` };
   }
 
-  const dest = items[items.length - 1];
-  const waypoints = items.slice(0, -1);
-  const wpStr = waypoints.map(p => `${p.latitude},${p.longitude}`).join('|');
-  let url = 'https://www.google.com/maps/dir/?api=1&travelmode=driving';
-  if (origin) url += `&origin=${encodeURIComponent(`${origin[1]},${origin[0]}`)}`;
-  if (wpStr) url += `&waypoints=${encodeURIComponent(wpStr)}`;
-  url += `&destination=${encodeURIComponent(`${dest.latitude},${dest.longitude}`)}`;
+  const url = buildGoogleMapsDirectionsUrl(items.map(p => ({
+    latitude: p.latitude!,
+    longitude: p.longitude!,
+  })), origin);
 
   if (url.length > 2000) return { error: 'Route URL is too long. This is unexpected with coordinate-based stops.' };
   return url;
 }
 
-async function handleSendToGoogleMaps() {
-  // Open immediately while this is still a direct user click. Waiting for the
-  // location permission prompt first causes browsers to block the Maps tab.
-  const mapsWindow = window.open('', '_blank');
-  if (mapsWindow) mapsWindow.opener = null;
-
-  // Ask only when the user sends a route. Google Maps still opens if permission
-  // is declined, using its own current-location setting.
-  const origin = currentLocation || await requestCurrentLocation(false);
-  const result = buildGoogleMapsUrl(origin);
+function handleSendToGoogleMaps() {
+  // Navigate to the complete universal URL during the original button tap.
+  // Opening a blank tab and replacing it after an async geolocation request
+  // prevents Android from handing the multi-stop URL to the Google Maps app.
+  // If location has not been cached, Maps supplies the current location itself.
+  const result = buildGoogleMapsUrl(currentLocation);
   if (typeof result === 'object' && 'error' in result) {
-    mapsWindow?.close();
     errorMessage = result.error;
     renderPanel();
     return;
   }
 
-  if (mapsWindow) {
-    mapsWindow.location.replace(result);
-  } else {
-    // A strict browser may still refuse a new tab; keep the route usable.
-    window.location.assign(result);
-  }
+  const mapsWindow = window.open(result, '_blank', 'noopener');
+  if (!mapsWindow) window.location.assign(result);
 }
 
 // ─── Map ───────────────────────────────────────────────
