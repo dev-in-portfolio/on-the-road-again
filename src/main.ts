@@ -2,7 +2,7 @@ import type * as maplibregl from 'maplibre-gl';
 import {
   fetchProspects, createProspect, updateProspect,
   toggleDroppedOff, archiveProspect, restoreProspect, deleteProspect,
-  geocodeAutocomplete, geocodeSearch,
+  geocodeAutocomplete, geocodeSearch, getAccessSession, signIn,
 } from './api/client';
 import { Prospect, AutocompleteSuggestion, CreateProspectInput } from './types/prospect';
 import { buildGoogleMapsDirectionsUrl } from './google-maps';
@@ -1053,6 +1053,36 @@ function rImport(p: HTMLElement) {
 function esc(s: string): string { return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;'); }
 
 // ─── Bootstrap ─────────────────────────────────────────
-setupShell();
-routeIds = loadRoute();
-loadData();
+async function bootstrap() {
+  try {
+    const session = await getAccessSession();
+    if (!session.authenticated) return renderAccessGate();
+    setupShell();
+    routeIds = loadRoute();
+    void loadData();
+  } catch (error: unknown) {
+    renderAccessGate(error instanceof Error ? error.message : 'Private access is unavailable.');
+  }
+}
+
+function renderAccessGate(message = '') {
+  const app = document.getElementById('app')!;
+  app.innerHTML = `<main class="access-gate"><section class="access-card"><p class="access-kicker">DARK STAR CONSULTING</p><h1>ON THE ROAD AGAIN</h1><p>This is a private field tool.</p>${message ? `<div class="error-banner">${esc(message)}</div>` : ''}<form id="access-form"><label class="form-label" for="access-code">Access code</label><input class="form-input" id="access-code" type="password" autocomplete="current-password" required autofocus><button class="btn btn-primary btn-full" type="submit">Open Field Tool</button></form></section></main>`;
+  document.getElementById('access-form')?.addEventListener('submit', async event => {
+    event.preventDefault();
+    const input = document.getElementById('access-code') as HTMLInputElement;
+    const button = (event.currentTarget as HTMLFormElement).querySelector('button') as HTMLButtonElement;
+    button.disabled = true; button.textContent = 'Opening...';
+    try {
+      const session = await signIn(input.value);
+      if (!session.authenticated) throw new Error('Private access was not granted.');
+      setupShell();
+      routeIds = loadRoute();
+      void loadData();
+    } catch (error: unknown) {
+      renderAccessGate(error instanceof Error ? error.message : 'Private access was not granted.');
+    }
+  });
+}
+
+void bootstrap();
