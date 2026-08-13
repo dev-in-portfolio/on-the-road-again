@@ -6,6 +6,7 @@ import {
 } from './api/client';
 import { Prospect, AutocompleteSuggestion, CreateProspectInput } from './types/prospect';
 import { buildGoogleMapsDirectionsUrl } from './google-maps';
+import { addRouteStop, moveRouteStop, removeRouteStop, resolveRoute } from './route-state';
 
 // ─── Constants ─────────────────────────────────────────
 const DEFAULT_CENTER: [number, number] = [-95.7129, 37.0902];
@@ -14,6 +15,9 @@ const SINGLE_ZOOM = 15;
 
 // ─── State ─────────────────────────────────────────────
 let prospects: Prospect[] = [];
+// Complete active prospect data. Search changes only `prospects`, never this
+// canonical store or the saved route.
+let activeProspects: Prospect[] = [];
 let archivedProspects: Prospect[] = [];
 let loading = true;
 let archivedLoading = false;
@@ -24,6 +28,9 @@ type View = 'panel-list' | 'panel-add' | 'panel-detail' | 'panel-edit' | 'panel-
 let panelView: View = 'panel-list';
 let selectedProspectId: string | null = null;
 let searchQuery = '';
+let searchAbort: AbortController | null = null;
+let searchTimer: ReturnType<typeof setTimeout> | null = null;
+let searchRequestSequence = 0;
 
 let addStep: 'entry' | 'confirm' | 'duplicate' = 'entry';
 let addName = '', addAddress = '', addNormalized = '';
@@ -164,32 +171,29 @@ function loadRoute(): string[] {
 function saveRoute() { try { localStorage.setItem(ROUTE_KEY, JSON.stringify(routeIds)); } catch { /* storage unavailable */ } }
 function getRouteIndex(id: string): number { return routeIds.indexOf(id); }
 function isInRoute(id: string): boolean { return routeIds.indexOf(id) >= 0; }
-
-function reconcileRoute() {
-  // Remove stale IDs: prospects that are no longer active (archived, deleted, or missing coords)
-  const activeIds = new Set(prospects.filter(p => p.latitude != null && p.longitude != null).map(p => p.id));
-  const cleaned = routeIds.filter(id => activeIds.has(id));
-  if (cleaned.length !== routeIds.length) { routeIds = cleaned; saveRoute(); }
-}
+function getRouteResolution() { return resolveRoute(routeIds, activeProspects); }
 
 function addToRoute(id: string): string | null {
-  if (isInRoute(id)) return null;
-  if (routeIds.length >= MAX_ROUTE) return `Route is full — maximum ${MAX_ROUTE} stops.`;
-  routeIds.push(id);
+  const next = addRouteStop(routeIds, id, MAX_ROUTE);
+  if (!next) return `Route is full — maximum ${MAX_ROUTE} stops.`;
+  if (next === routeIds) return null;
+  routeIds = next;
   saveRoute();
   refreshMarkers();
   return null;
 }
 function removeFromRoute(id: string) {
-  routeIds = routeIds.filter(rid => rid !== id);
+  routeIds = removeRouteStop(routeIds, id);
   saveRoute();
   refreshMarkers();
 }
 function moveRouteItem(idx: number, dir: -1 | 1) {
-  const nxt = idx + dir; if (nxt < 0 || nxt >= routeIds.length) return;
-  [routeIds[idx], routeIds[nxt]] = [routeIds[nxt], routeIds[idx]];
+  const next = moveRouteStop(routeIds, idx, dir);
+  if (next === routeIds) return;
+  routeIds = next;
   saveRoute();
   refreshMarkers();
+  renderPanel();
 }
 function clearRoute() {
   if (!routeIds.length) return;
@@ -202,8 +206,9 @@ function clearRoute() {
 // ─── Google Maps Handoff ───────────────────────────────
 
 function buildGoogleMapsUrl(origin: [number, number] | null): string | { error: string } {
-  const items = routeIds.map(id => getById(id)).filter(Boolean) as Prospect[];
+  const { items, missingIds } = getRouteResolution();
   if (items.length === 0) return { error: 'Select at least one restaurant first.' };
+  if (missingIds.length) return { error: 'One or more route stops are unavailable. Remove them from Current Route before sending.' };
 
   const invalid = items.filter(p => p.latitude == null || p.longitude == null);
   if (invalid.length > 0) {
@@ -508,19 +513,41 @@ function setupMapControls() {
 function updateSearchBar() {
   const sb = document.getElementById('search-bar'); if (!sb) return;
   sb.innerHTML = `<input type="search" id="shell-search" class="form-input search-input" placeholder="Search prospects..." autocomplete="off" value="${esc(searchQuery)}">${searchQuery ? '<button class="btn btn-small btn-secondary" id="shell-clear">✕</button>' : ''}`;
-  document.getElementById('shell-search')?.addEventListener('input', e => { searchQuery = (e.target as HTMLInputElement).value; loadData(); });
-  document.getElementById('shell-clear')?.addEventListener('click', () => { searchQuery = ''; loadData(); });
+  document.getElementById('shell-search')?.addEventListener('input', e => { searchQuery = (e.target as HTMLInputElement).value; scheduleSearch(); });
+  document.getElementById('shell-clear')?.addEventListener('click', () => { searchQuery = ''; scheduleSearch(true); });
+}
+
+function scheduleSearch(immediate = false) {
+  if (searchTimer) clearTimeout(searchTimer);
+  if (searchAbort) searchAbort.abort();
+  const run = () => { void loadData(); };
+  searchTimer = immediate ? null : setTimeout(run, 220);
+  if (immediate) run();
 }
 
 // ─── Data ──────────────────────────────────────────────
 async function loadData() {
+  const requestSequence = ++searchRequestSequence;
+  searchAbort?.abort();
+  const controller = new AbortController();
+  searchAbort = controller;
   loading = true; errorMessage = null; renderPanel();
-  try { prospects = await fetchProspects(searchQuery || undefined, false); }
-  catch (e: unknown) { errorMessage = e instanceof Error ? e.message : 'Failed to load.'; }
+  try {
+    const visible = await fetchProspects(searchQuery || undefined, false, controller.signal);
+    if (requestSequence !== searchRequestSequence) return;
+    prospects = visible;
+    // Search results are display-only. The unfiltered load hydrates the route's
+    // canonical source of truth and is never replaced by a filtered result.
+    if (!searchQuery) activeProspects = visible;
+  }
+  catch (e: unknown) {
+    if (requestSequence !== searchRequestSequence || (e instanceof DOMException && e.name === 'AbortError')) return;
+    errorMessage = e instanceof Error ? e.message : 'Failed to load.';
+  }
   finally {
+    if (requestSequence !== searchRequestSequence) return;
     loading = false;
     void createMap();
-    reconcileRoute();
     refreshMarkers();
     // Render first: fitMap uses the panel's real overlay height.
     renderPanel();
@@ -623,14 +650,14 @@ async function confirmAdd() {
   try {
     const r = await createProspect(inp);
     if ('code' in r && r.code === 'DUPLICATE_DETECTED') { addDuplicates = r.duplicates; addStep = 'duplicate'; submitting = false; renderPanel(); return; }
-    prospects.unshift(r as Prospect); resetAdd(); panelView = 'panel-list'; refreshMarkers(); submitting = false; renderPanel();
+    const created = r as Prospect; prospects.unshift(created); activeProspects.unshift(created); resetAdd(); panelView = 'panel-list'; refreshMarkers(); submitting = false; renderPanel();
   } catch (er: unknown) { errorMessage = er instanceof Error ? er.message : "Couldn't save."; submitting = false; renderPanel(); }
 }
 
 async function confirmAddDup() {
   submitting = true; renderPanel();
   const inp: CreateProspectInput = { restaurant_name: addName, address_input: addAddress, address_normalized: addNormalized || null, latitude: addLat, longitude: addLon, geocode_provider: addLat !== null ? 'Geoapify' : null, geocode_reference: addPlaceId || null, skip_duplicate_check: true };
-  try { prospects.unshift(await createProspect(inp) as Prospect); resetAdd(); panelView = 'panel-list'; refreshMarkers(); submitting = false; renderPanel(); }
+  try { const created = await createProspect(inp) as Prospect; prospects.unshift(created); activeProspects.unshift(created); resetAdd(); panelView = 'panel-list'; refreshMarkers(); submitting = false; renderPanel(); }
   catch (er: unknown) { errorMessage = er instanceof Error ? er.message : "Couldn't save."; submitting = false; renderPanel(); }
 }
 
@@ -668,19 +695,19 @@ async function confirmEdit() {
   try {
     const r = await updateProspect({ id: selectedProspectId, restaurant_name: edName, address_input: edAddr, address_normalized: edNorm || null, latitude: edLat, longitude: edLon, geocode_provider: edLat !== null ? 'Geoapify' : null, geocode_reference: edPid || null });
     if ('code' in r && r.code === 'DUPLICATE_DETECTED') { edDups = r.duplicates; edStep = 'duplicate'; submitting = false; renderPanel(); return; }
-    const u = r as Prospect; prospects = prospects.map(p => p.id === u.id ? u : p); selectedProspectId = u.id; panelView = 'panel-detail'; refreshMarkers(); submitting = false; renderPanel();
+    const u = r as Prospect; prospects = prospects.map(p => p.id === u.id ? u : p); activeProspects = activeProspects.map(p => p.id === u.id ? u : p); selectedProspectId = u.id; panelView = 'panel-detail'; refreshMarkers(); submitting = false; renderPanel();
   } catch (er: unknown) { errorMessage = er instanceof Error ? er.message : 'Failed to update.'; submitting = false; renderPanel(); }
 }
 
 async function confirmEditDup() {
   if (!selectedProspectId) return; submitting = true; renderPanel();
-  try { const r = await updateProspect({ id: selectedProspectId, restaurant_name: edName, address_input: edAddr, address_normalized: edNorm || null, latitude: edLat, longitude: edLon, geocode_provider: edLat !== null ? 'Geoapify' : null, geocode_reference: edPid || null, skip_duplicate_check: true }); const u = r as Prospect; prospects = prospects.map(p => p.id === u.id ? u : p); selectedProspectId = u.id; panelView = 'panel-detail'; refreshMarkers(); submitting = false; renderPanel(); }
+  try { const r = await updateProspect({ id: selectedProspectId, restaurant_name: edName, address_input: edAddr, address_normalized: edNorm || null, latitude: edLat, longitude: edLon, geocode_provider: edLat !== null ? 'Geoapify' : null, geocode_reference: edPid || null, skip_duplicate_check: true }); const u = r as Prospect; prospects = prospects.map(p => p.id === u.id ? u : p); activeProspects = activeProspects.map(p => p.id === u.id ? u : p); selectedProspectId = u.id; panelView = 'panel-detail'; refreshMarkers(); submitting = false; renderPanel(); }
   catch (er: unknown) { errorMessage = er instanceof Error ? er.message : 'Failed to update.'; submitting = false; renderPanel(); }
 }
 
 // ─── Actions ───────────────────────────────────────────
 async function handleToggleDropped(id: string, cur: boolean) {
-  try { const u = await toggleDroppedOff(id, cur); prospects = prospects.map(p => p.id === id ? u : p); refreshMarkers(); if (panelView === 'panel-detail' && selectedProspectId === id) renderPanel(); else if (panelView === 'panel-list') renderPanel(); }
+  try { const u = await toggleDroppedOff(id, cur); prospects = prospects.map(p => p.id === id ? u : p); activeProspects = activeProspects.map(p => p.id === id ? u : p); refreshMarkers(); if (panelView === 'panel-detail' && selectedProspectId === id) renderPanel(); else if (panelView === 'panel-list') renderPanel(); }
   catch (e: unknown) { errorMessage = e instanceof Error ? e.message : 'Failed.'; renderPanel(); }
 }
 
@@ -688,7 +715,7 @@ async function handleArchive(id: string) {
   try {
     const archived = await archiveProspect(id);
     archivedProspects = [archived, ...archivedProspects.filter(p => p.id !== id)];
-    removeFromRoute(id); prospects = prospects.filter(p => p.id !== id); refreshMarkers();
+    prospects = prospects.filter(p => p.id !== id); activeProspects = activeProspects.filter(p => p.id !== id); refreshMarkers();
     if (selectedProspectId === id) { selectedProspectId = null; panelView = 'panel-list'; }
     renderPanel();
   }
@@ -699,7 +726,7 @@ async function handleRestore(id: string) {
   try {
     const u = await restoreProspect(id);
     archivedProspects = archivedProspects.filter(p => p.id !== id);
-    prospects.unshift(u); refreshMarkers();
+    prospects.unshift(u); activeProspects.unshift(u); refreshMarkers();
     if (selectedProspectId === id) { selectedProspectId = id; panelView = 'panel-detail'; }
     renderPanel();
   }
@@ -708,11 +735,11 @@ async function handleRestore(id: string) {
 
 async function handleDelete(id: string) {
   if (!confirm('Permanently delete?')) return;
-  try { await deleteProspect(id); removeFromRoute(id); prospects = prospects.filter(p => p.id !== id); refreshMarkers(); if (selectedProspectId === id) { selectedProspectId = null; panelView = 'panel-list'; } renderPanel(); }
+  try { await deleteProspect(id); removeFromRoute(id); prospects = prospects.filter(p => p.id !== id); activeProspects = activeProspects.filter(p => p.id !== id); refreshMarkers(); if (selectedProspectId === id) { selectedProspectId = null; panelView = 'panel-list'; } renderPanel(); }
   catch (e: unknown) { errorMessage = e instanceof Error ? e.message : 'Failed.'; renderPanel(); }
 }
 
-function getById(id: string): Prospect | undefined { return prospects.find(p => p.id === id); }
+function getById(id: string): Prospect | undefined { return activeProspects.find(p => p.id === id); }
 
 // ─── Panel Render ──────────────────────────────────────
 function renderPanel() {
@@ -722,7 +749,7 @@ function renderPanel() {
 
 function rList(p: HTMLElement) {
   const nc = prospects.filter(x => x.latitude == null || x.longitude == null).length;
-  const routeItems = routeIds.map(id => getById(id)).filter(Boolean) as Prospect[];
+  const { items: routeItems, missingIds } = getRouteResolution();
   p.innerHTML = `<div class="panel-header"><h1 class="app-title">ON THE ROAD AGAIN</h1><p class="app-subtitle">${prospects.length} prospect${prospects.length !== 1 ? 's' : ''}</p></div>
     ${errorMessage ? `<div class="error-banner">${esc(errorMessage)}</div>` : ''}
     ${nc > 0 && !loading ? `<div class="info-banner">${nc} prospect${nc !== 1 ? 's' : ''} need${nc === 1 ? 's' : ''} an address update for the map.</div>` : ''}
@@ -739,6 +766,7 @@ function rList(p: HTMLElement) {
           <button class="btn btn-small btn-danger route-rm" data-id="${x.id}" aria-label="Remove ${esc(x.restaurant_name)} from route">✕</button>
         </div>
       </div>`).join('')}</div>
+      ${missingIds.length ? `<div class="warning-banner">${missingIds.length} unavailable route stop${missingIds.length === 1 ? '' : 's'} retained. Remove it only if you no longer need it.</div>` : ''}
       <button class="btn btn-secondary btn-full" id="btn-clear-route">Clear Route</button>
       <button class="btn btn-primary btn-full btn-send-gmaps" id="btn-send-gmaps">🗺️ Send ${routeItems.length} Stop${routeItems.length !== 1 ? 's' : ''} to Google Maps</button>
     </div>` : ''}
