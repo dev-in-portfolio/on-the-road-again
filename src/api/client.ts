@@ -14,7 +14,8 @@ const GEOCODE_BASE = '/api/geocode';
 
 export async function fetchProspects(
   search?: string,
-  includeArchived = false
+  includeArchived = false,
+  signal?: AbortSignal,
 ): Promise<Prospect[]> {
   const params = new URLSearchParams();
   if (search) params.set('search', search);
@@ -22,7 +23,7 @@ export async function fetchProspects(
   const qs = params.toString();
   const url = qs ? `${API_BASE}?${qs}` : API_BASE;
 
-  const res = await fetch(url);
+  const res = await fetch(url, { signal });
   if (!res.ok) {
     const errorData = await res.json().catch(() => ({}));
     throw new Error(errorData.error || `Failed to fetch prospects (Status ${res.status})`);
