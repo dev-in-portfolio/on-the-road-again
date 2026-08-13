@@ -24,7 +24,7 @@ let archivedLoading = false;
 let errorMessage: string | null = null;
 let submitting = false;
 
-type View = 'panel-list' | 'panel-add' | 'panel-detail' | 'panel-edit' | 'panel-archived' | 'panel-import';
+type View = 'panel-list' | 'panel-route' | 'panel-add' | 'panel-detail' | 'panel-edit' | 'panel-archived' | 'panel-import';
 let panelView: View = 'panel-list';
 let selectedProspectId: string | null = null;
 let searchQuery = '';
@@ -504,10 +504,18 @@ function setupMapControls() {
   const mc = document.getElementById('map-container');
   if (!mc) return;
   const div = document.createElement('div'); div.id = 'map-controls';
-  div.innerHTML = `<button class="map-ctrl-btn" id="btn-locate" title="Locate Me" aria-label="Locate Me">📍</button><button class="map-ctrl-btn" id="btn-map-add" title="Add Prospect" aria-label="Add Prospect">＋</button>`;
+  div.innerHTML = `<button class="map-ctrl-btn route-control" id="btn-current-route" title="Open Current Route" aria-label="Open Current Route">ROUTE · 0</button><button class="map-ctrl-btn" id="btn-locate" title="Locate Me" aria-label="Locate Me">📍</button><button class="map-ctrl-btn" id="btn-map-add" title="Add Prospect" aria-label="Add Prospect">＋</button>`;
   mc.appendChild(div);
+  document.getElementById('btn-current-route')?.addEventListener('click', () => { panelView = 'panel-route'; renderPanel(); });
   document.getElementById('btn-locate')?.addEventListener('click', handleLocate);
   document.getElementById('btn-map-add')?.addEventListener('click', () => { resetAdd(); panelView = 'panel-add'; renderPanel(); });
+}
+
+function updateRouteControl() {
+  const button = document.getElementById('btn-current-route');
+  if (!button) return;
+  button.textContent = `ROUTE · ${routeIds.length}`;
+  button.setAttribute('aria-label', `Open Current Route, ${routeIds.length} stop${routeIds.length === 1 ? '' : 's'}`);
 }
 
 function updateSearchBar() {
@@ -707,7 +715,7 @@ async function confirmEditDup() {
 
 // ─── Actions ───────────────────────────────────────────
 async function handleToggleDropped(id: string, cur: boolean) {
-  try { const u = await toggleDroppedOff(id, cur); prospects = prospects.map(p => p.id === id ? u : p); activeProspects = activeProspects.map(p => p.id === id ? u : p); refreshMarkers(); if (panelView === 'panel-detail' && selectedProspectId === id) renderPanel(); else if (panelView === 'panel-list') renderPanel(); }
+  try { const u = await toggleDroppedOff(id, cur); prospects = prospects.map(p => p.id === id ? u : p); activeProspects = activeProspects.map(p => p.id === id ? u : p); refreshMarkers(); if ((panelView === 'panel-detail' && selectedProspectId === id) || panelView === 'panel-list' || panelView === 'panel-route') renderPanel(); }
   catch (e: unknown) { errorMessage = e instanceof Error ? e.message : 'Failed.'; renderPanel(); }
 }
 
@@ -744,7 +752,36 @@ function getById(id: string): Prospect | undefined { return activeProspects.find
 // ─── Panel Render ──────────────────────────────────────
 function renderPanel() {
   const p = document.getElementById('panel-container'); if (!p) return;
-  switch (panelView) { case 'panel-list': rList(p); break; case 'panel-add': rAdd(p); break; case 'panel-detail': rDetail(p); break; case 'panel-edit': rEdit(p); break; case 'panel-archived': rArch(p); break; case 'panel-import': rImport(p); break; }
+  switch (panelView) { case 'panel-list': rList(p); break; case 'panel-route': rRoute(p); break; case 'panel-add': rAdd(p); break; case 'panel-detail': rDetail(p); break; case 'panel-edit': rEdit(p); break; case 'panel-archived': rArch(p); break; case 'panel-import': rImport(p); break; }
+  updateRouteControl();
+}
+
+function rRoute(p: HTMLElement) {
+  const { items, missingIds } = getRouteResolution();
+  p.innerHTML = `<div class="panel-header"><button class="btn btn-back" id="btn-route-back">← Map</button><h1 class="app-title" style="font-size:1.15rem;">Current Route</h1></div>
+    ${errorMessage ? `<div class="error-banner">${esc(errorMessage)}</div>` : ''}
+    <div class="card route-tray">
+      <div class="card-title"><span>Leave-Behind Route</span><span class="badge badge-pending">${routeIds.length} / ${MAX_ROUTE}</span></div>
+      ${items.length ? `<div class="route-list">${items.map((item, index) => `<div class="route-item route-work-item">
+        <span class="route-num">${index + 1}.</span>
+        <div class="route-info"><div class="route-name">${esc(item.restaurant_name)}</div><div class="route-addr">${esc(item.address_normalized || item.address_input)}</div>${item.dropped_off ? '<span class="badge badge-dropped">🌹 Dropped Off</span>' : ''}</div>
+        <div class="route-ctrls">
+          <button class="btn btn-small btn-secondary route-up" data-idx="${index}" ${index === 0 ? 'disabled' : ''} aria-label="Move ${esc(item.restaurant_name)} up">↑</button>
+          <button class="btn btn-small btn-secondary route-dn" data-idx="${index}" ${index === items.length - 1 ? 'disabled' : ''} aria-label="Move ${esc(item.restaurant_name)} down">↓</button>
+          <button class="btn btn-small btn-status ${item.dropped_off ? 'dropped' : 'pending'} route-drop" data-id="${item.id}" data-dr="${item.dropped_off}">${item.dropped_off ? 'Undo' : 'Drop'}</button>
+          <button class="btn btn-small btn-danger route-rm" data-id="${item.id}" aria-label="Remove ${esc(item.restaurant_name)} from route">✕</button>
+        </div>
+      </div>`).join('')}</div>` : '<div class="empty-state"><span class="empty-text">No stops yet. Tap map pins to build your route.</span></div>'}
+      ${missingIds.length ? `<div class="warning-banner">${missingIds.length} unavailable route stop${missingIds.length === 1 ? '' : 's'} retained. Remove it only if you no longer need it.</div>` : ''}
+      ${items.length ? `<button class="btn btn-primary btn-full btn-send-gmaps" id="btn-send-gmaps">Open ${items.length} Stop${items.length === 1 ? '' : 's'} in Google Maps</button><button class="btn btn-secondary btn-full" id="btn-clear-route">Clear Route</button>` : ''}
+    </div>`;
+  document.getElementById('btn-route-back')?.addEventListener('click', () => { panelView = 'panel-list'; renderPanel(); });
+  document.getElementById('btn-clear-route')?.addEventListener('click', () => { clearRoute(); panelView = 'panel-route'; renderPanel(); });
+  document.getElementById('btn-send-gmaps')?.addEventListener('click', handleSendToGoogleMaps);
+  p.querySelectorAll('.route-up').forEach(button => button.addEventListener('click', () => moveRouteItem(parseInt(button.getAttribute('data-idx')!), -1)));
+  p.querySelectorAll('.route-dn').forEach(button => button.addEventListener('click', () => moveRouteItem(parseInt(button.getAttribute('data-idx')!), 1)));
+  p.querySelectorAll('.route-rm').forEach(button => button.addEventListener('click', () => { removeFromRoute(button.getAttribute('data-id')!); renderPanel(); }));
+  p.querySelectorAll('.route-drop').forEach(button => button.addEventListener('click', () => { void handleToggleDropped(button.getAttribute('data-id')!, button.getAttribute('data-dr') === 'true'); }));
 }
 
 function rList(p: HTMLElement) {
