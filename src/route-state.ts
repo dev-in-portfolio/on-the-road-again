@@ -40,6 +40,20 @@ export function resolveRoute(routeIds: string[], prospects: Prospect[]): RouteRe
   return { items, missingIds };
 }
 
+// Ordered route entries that preserve each ID's position in `routeIds`, so the
+// UI can render resolved and missing stops interleaved with correct numbering.
+export type RouteEntry =
+  | { kind: 'resolved'; id: string; prospect: Prospect }
+  | { kind: 'missing'; id: string };
+
+export function routeEntries(routeIds: string[], prospects: Prospect[]): RouteEntry[] {
+  const byId = new Map(prospects.map(prospect => [prospect.id, prospect]));
+  return routeIds.map(id => {
+    const prospect = byId.get(id);
+    return prospect ? { kind: 'resolved', id, prospect } : { kind: 'missing', id };
+  });
+}
+
 // --- Persistence -----------------------------------------------------------
 // localStorage is device-local. Route membership is stored as a plain array of
 // prospect IDs and must fail safely (return []) on malformed or non-array data

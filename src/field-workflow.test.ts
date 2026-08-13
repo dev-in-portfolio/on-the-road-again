@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { Prospect } from './types/prospect.ts';
-import { addRouteStop, moveRouteStop, resolveRoute, MAX_ROUTE, serializeRoute, parseRoute } from './route-state.ts';
-import { upsertProspect } from './prospect-actions.ts';
+import { addRouteStop, moveRouteStop, resolveRoute, routeEntries, removeRouteStop, MAX_ROUTE, serializeRoute, parseRoute } from './route-state.ts';
+import { upsertProspect, removeProspectById, prependProspect } from './prospect-actions.ts';
 import { filterProspects } from './prospect-list.ts';
 import { buildRouteGoogleMapsUrl } from './google-maps.ts';
 
@@ -99,5 +99,89 @@ describe('field workflow integration', () => {
     store = upsertProspect(store, prospect('b', { dropped_off: true }));
     assert.deepEqual(route, ['a', 'b']);
     assert.deepEqual(resolveRoute(route, store).items.map(p => p.id), ['a', 'b']);
+  });
+
+  it('imported prospect is resolvable in the route without a reload (canonical store updated)', () => {
+    let activeStore: Prospect[] = [];
+    // A successful bulk import creates a prospect and prepends it to the
+    // canonical active store (not just the displayed list).
+    const imported = prospect('imported-1', { latitude: 35.4, longitude: -80.4 });
+    activeStore = prependProspect(activeStore, imported);
+
+    // Add its ID to Current Route immediately, without reloading.
+    const route = addRouteStop([], imported.id, MAX_ROUTE) ?? [];
+    assert.deepEqual(route, [imported.id]);
+
+    // The route resolves against the canonical store and the handoff succeeds.
+    const { items, missingIds } = resolveRoute(route, activeStore);
+    assert.deepEqual(missingIds, []);
+    assert.deepEqual(items.map(p => p.id), [imported.id]);
+    assert.equal(typeof buildRouteGoogleMapsUrl({ items, missingIds }, null), 'string');
+  });
+
+  it('map-popup Dropped Off updates the canonical store without altering route order', () => {
+    let store = [prospect('a'), prospect('b'), prospect('c')];
+    const route = ['a', 'b', 'c'];
+
+    // Equivalent of the map-popup Drop transition: update the canonical store.
+    store = upsertProspect(store, { ...prospect('b'), dropped_off: true });
+
+    // Route IDs and order are unchanged.
+    assert.deepEqual(route, ['a', 'b', 'c']);
+
+    // Canonical route resolution now reflects the updated status.
+    const { items } = resolveRoute(route, store);
+    assert.deepEqual(items.map(p => p.id), ['a', 'b', 'c']);
+    assert.equal(items[1].dropped_off, true);
+  });
+
+  it('an archived/missing stop is individually removable and the handoff then succeeds', () => {
+    let store = [
+      prospect('a', { latitude: 35.1, longitude: -80.1 }),
+      prospect('b', { latitude: 35.2, longitude: -80.2 }),
+      prospect('c', { latitude: 35.3, longitude: -80.3 }),
+    ];
+    let route = ['a', 'b', 'c'];
+
+    // Archive/remove B from the active canonical store.
+    store = removeProspectById(store, 'b');
+
+    // Route IDs remain A,B,C.
+    assert.deepEqual(route, ['a', 'b', 'c']);
+
+    // B is represented as unavailable at position 2 (index 1).
+    const entries = routeEntries(route, store);
+    assert.deepEqual(entries.map(e => e.kind), ['resolved', 'missing', 'resolved']);
+    assert.equal(entries[1].kind, 'missing');
+    assert.equal(entries[1].id, 'b');
+
+    // Handoff is blocked while the missing stop remains.
+    assert.equal(typeof buildRouteGoogleMapsUrl(resolveRoute(route, store), null), 'object');
+
+    // Remove only B.
+    route = removeRouteStop(route, 'b');
+    assert.deepEqual(route, ['a', 'c']);
+
+    // Google Maps handoff now succeeds with A, C in order.
+    const { items, missingIds } = resolveRoute(route, store);
+    assert.deepEqual(missingIds, []);
+    const result = buildRouteGoogleMapsUrl({ items, missingIds }, null);
+    assert.equal(typeof result, 'string');
+    const url = new URL(result as string);
+    assert.equal(url.searchParams.get('waypoints'), '35.1,-80.1');
+    assert.equal(url.searchParams.get('destination'), '35.3,-80.3');
+  });
+
+  it('a route of entirely unavailable IDs is still individually removable', () => {
+    const store: Prospect[] = [];
+    let route = ['x', 'y', 'z'];
+
+    const entries = routeEntries(route, store);
+    assert.deepEqual(entries.map(e => e.kind), ['missing', 'missing', 'missing']);
+
+    // The user can remove them one at a time rather than clearing the whole route.
+    route = removeRouteStop(route, 'y');
+    assert.deepEqual(route, ['x', 'z']);
+    assert.deepEqual(routeEntries(route, store).map(e => e.id), ['x', 'z']);
   });
 });

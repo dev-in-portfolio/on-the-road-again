@@ -7,7 +7,7 @@ import {
 import { Prospect, AutocompleteSuggestion, CreateProspectInput } from './types/prospect';
 import { buildRouteGoogleMapsUrl } from './google-maps';
 import {
-  addRouteStop, moveRouteStop, removeRouteStop, resolveRoute,
+  addRouteStop, moveRouteStop, removeRouteStop, resolveRoute, routeEntries,
   MAX_ROUTE, loadRouteIds, saveRouteIds,
 } from './route-state';
 import { filterProspects, sortProspects, ListFilter, ListSort } from './prospect-list';
@@ -117,6 +117,7 @@ async function saveImportRows() {
       } else {
         row.status = 'imported';
         prospects = prependProspect(prospects, result as Prospect);
+        activeProspects = prependProspect(activeProspects, result as Prospect);
         saved++;
       }
     } catch (e: unknown) {
@@ -402,7 +403,16 @@ function toggleRouteSelection(id: string) {
 }
 
 async function mapToggleDropped(id: string, cur: boolean) {
-  try { const u = await toggleDroppedOff(id, cur); prospects = upsertProspect(prospects, u); refreshMarkers(); if (panelView === 'panel-detail' && selectedProspectId === id) renderPanel(); } catch (e: unknown) { errorMessage = e instanceof Error ? e.message : 'Failed'; renderPanel(); }
+  try {
+    const u = await toggleDroppedOff(id, cur);
+    prospects = upsertProspect(prospects, u);
+    activeProspects = upsertProspect(activeProspects, u);
+    refreshMarkers();
+    // Re-render the open popup so its status and Drop/Undo label update in place.
+    const mk = markers.get(id);
+    if (mk) openPopup(u, mk);
+    if (panelView === 'panel-detail' && selectedProspectId === id) renderPanel();
+  } catch (e: unknown) { errorMessage = e instanceof Error ? e.message : 'Failed'; renderPanel(); }
 }
 
 function flyTo(p: Prospect) {
@@ -713,24 +723,34 @@ function renderPanel() {
   updateRouteControl();
 }
 
+function unavailableRouteRow(id: string, index: number): string {
+  return `<div class="route-item route-work-item">
+    <span class="route-num">${index + 1}.</span>
+    <div class="route-info"><div class="route-name">Unavailable prospect</div><div class="route-addr">This stop is archived/deleted/unavailable.</div></div>
+    <div class="route-ctrls"><button class="btn btn-small btn-danger route-rm" data-id="${esc(id)}" aria-label="Remove unavailable stop from route">Remove from Route</button></div>
+  </div>`;
+}
+
 function rRoute(p: HTMLElement) {
-  const { items, missingIds } = getRouteResolution();
+  const entries = routeEntries(routeIds, activeProspects);
+  const count = routeIds.length;
   p.innerHTML = `<div class="panel-header"><button class="btn btn-back" id="btn-route-back">← Map</button><h1 class="app-title" style="font-size:1.15rem;">Current Route</h1></div>
     ${errorMessage ? `<div class="error-banner">${esc(errorMessage)}</div>` : ''}
     <div class="card route-tray">
-      <div class="card-title"><span>Leave-Behind Route</span><span class="badge badge-pending">${routeIds.length} / ${MAX_ROUTE}</span></div>
-      ${items.length ? `<div class="route-list">${items.map((item, index) => `<div class="route-item route-work-item">
-        <span class="route-num">${index + 1}.</span>
-        <div class="route-info"><div class="route-name">${esc(item.restaurant_name)}</div><div class="route-addr">${esc(item.address_normalized || item.address_input)}</div>${item.dropped_off ? '<span class="badge badge-dropped">🌹 Dropped Off</span>' : ''}</div>
-        <div class="route-ctrls">
-          <button class="btn btn-small btn-secondary route-up" data-idx="${index}" ${index === 0 ? 'disabled' : ''} aria-label="Move ${esc(item.restaurant_name)} up">↑</button>
-          <button class="btn btn-small btn-secondary route-dn" data-idx="${index}" ${index === items.length - 1 ? 'disabled' : ''} aria-label="Move ${esc(item.restaurant_name)} down">↓</button>
-          <button class="btn btn-small btn-status ${item.dropped_off ? 'dropped' : 'pending'} route-drop" data-id="${item.id}" data-dr="${item.dropped_off}">${item.dropped_off ? 'Undo' : 'Drop'}</button>
-          <button class="btn btn-small btn-danger route-rm" data-id="${item.id}" aria-label="Remove ${esc(item.restaurant_name)} from route">✕</button>
-        </div>
-      </div>`).join('')}</div>` : '<div class="empty-state"><span class="empty-text">No stops yet. Tap map pins to build your route.</span></div>'}
-      ${missingIds.length ? `<div class="warning-banner">${missingIds.length} unavailable route stop${missingIds.length === 1 ? '' : 's'} retained. Remove it only if you no longer need it.</div>` : ''}
-      ${items.length ? `<button class="btn btn-primary btn-full btn-send-gmaps" id="btn-send-gmaps">Open ${items.length} Stop${items.length === 1 ? '' : 's'} in Google Maps</button><button class="btn btn-secondary btn-full" id="btn-clear-route">Clear Route</button>` : ''}
+      <div class="card-title"><span>Leave-Behind Route</span><span class="badge badge-pending">${count} / ${MAX_ROUTE}</span></div>
+      ${count ? `<div class="route-list">${entries.map((entry, index) => entry.kind === 'missing'
+        ? unavailableRouteRow(entry.id, index)
+        : `<div class="route-item route-work-item">
+            <span class="route-num">${index + 1}.</span>
+            <div class="route-info"><div class="route-name">${esc(entry.prospect.restaurant_name)}</div><div class="route-addr">${esc(entry.prospect.address_normalized || entry.prospect.address_input)}</div>${entry.prospect.dropped_off ? '<span class="badge badge-dropped">🌹 Dropped Off</span>' : ''}</div>
+            <div class="route-ctrls">
+              <button class="btn btn-small btn-secondary route-up" data-idx="${index}" ${index === 0 ? 'disabled' : ''} aria-label="Move ${esc(entry.prospect.restaurant_name)} up">↑</button>
+              <button class="btn btn-small btn-secondary route-dn" data-idx="${index}" ${index === count - 1 ? 'disabled' : ''} aria-label="Move ${esc(entry.prospect.restaurant_name)} down">↓</button>
+              <button class="btn btn-small btn-status ${entry.prospect.dropped_off ? 'dropped' : 'pending'} route-drop" data-id="${entry.prospect.id}" data-dr="${entry.prospect.dropped_off}">${entry.prospect.dropped_off ? 'Undo' : 'Drop'}</button>
+              <button class="btn btn-small btn-danger route-rm" data-id="${entry.prospect.id}" aria-label="Remove ${esc(entry.prospect.restaurant_name)} from route">✕</button>
+            </div>
+          </div>`).join('')}</div>` : '<div class="empty-state"><span class="empty-text">No stops yet. Tap map pins to build your route.</span></div>'}
+      ${count ? `<button class="btn btn-primary btn-full btn-send-gmaps" id="btn-send-gmaps">Open ${count} Stop${count === 1 ? '' : 's'} in Google Maps</button><button class="btn btn-secondary btn-full" id="btn-clear-route">Clear Route</button>` : ''}
     </div>`;
   document.getElementById('btn-route-back')?.addEventListener('click', () => { panelView = 'panel-list'; renderPanel(); });
   document.getElementById('btn-clear-route')?.addEventListener('click', () => { clearRoute(); panelView = 'panel-route'; renderPanel(); });
@@ -743,28 +763,30 @@ function rRoute(p: HTMLElement) {
 
 function rList(p: HTMLElement) {
   const nc = prospects.filter(x => x.latitude == null || x.longitude == null).length;
-  const { items: routeItems, missingIds } = getRouteResolution();
+  const routeEntriesList = routeEntries(routeIds, activeProspects);
+  const routeCount = routeIds.length;
   const listProspects = getListProspects();
   p.innerHTML = `<div class="panel-header"><h1 class="app-title">ON THE ROAD AGAIN</h1><p class="app-subtitle">${prospects.length} prospect${prospects.length !== 1 ? 's' : ''}</p></div>
     ${errorMessage ? `<div class="error-banner">${esc(errorMessage)}</div>` : ''}
     ${nc > 0 && !loading ? `<div class="info-banner">${nc} prospect${nc !== 1 ? 's' : ''} need${nc === 1 ? 's' : ''} an address update for the map.</div>` : ''}
     <details class="backstage-tools"><summary>Backstage tools <span>database &amp; import</span></summary><div class="panel-actions-row"><button class="btn btn-primary" id="btn-pl-add">+ Add Prospect</button><button class="btn btn-secondary" id="btn-pl-arch">📦 Archived</button><button class="btn btn-secondary" id="btn-pl-import">📋 Import</button></div></details>
     <div class="list-tools" aria-label="Prospect list options"><label class="sr-only" for="list-filter">Filter prospects</label><select class="form-input list-select" id="list-filter"><option value="all" ${listFilter === 'all' ? 'selected' : ''}>All prospects</option><option value="not-dropped" ${listFilter === 'not-dropped' ? 'selected' : ''}>Not dropped off</option><option value="dropped" ${listFilter === 'dropped' ? 'selected' : ''}>Dropped off</option><option value="route" ${listFilter === 'route' ? 'selected' : ''}>In Current Route</option></select><label class="sr-only" for="list-sort">Sort prospects</label><select class="form-input list-select" id="list-sort"><option value="nearby" ${listSort === 'nearby' ? 'selected' : ''}>${currentLocation ? 'Nearest first' : 'A–Z (locate me for nearby)'}</option><option value="name" ${listSort === 'name' ? 'selected' : ''}>A–Z</option></select></div>
-    ${routeItems.length > 0 ? `<div class="card route-tray">
-      <div class="card-title"><span>⚡ Current Route</span><span class="badge badge-pending">${routeItems.length} / ${MAX_ROUTE}</span></div>
+    ${routeCount ? `<div class="card route-tray">
+      <div class="card-title"><span>⚡ Current Route</span><span class="badge badge-pending">${routeCount} / ${MAX_ROUTE}</span></div>
       <div class="route-hint">Choose up to 9 restaurants. Your current location is the route start.</div>
-      <div class="route-list">${routeItems.map((x, i) => `<div class="route-item">
-        <span class="route-num">${i + 1}.</span>
-        <div class="route-info"><div class="route-name">${esc(x.restaurant_name)}</div><div class="route-addr">${esc(x.address_normalized || x.address_input)}</div></div>
-        <div class="route-ctrls">
-          <button class="btn btn-small btn-secondary route-up" data-idx="${i}" ${i === 0 ? 'disabled' : ''} aria-label="Move ${esc(x.restaurant_name)} up">↑</button>
-          <button class="btn btn-small btn-secondary route-dn" data-idx="${i}" ${i === routeItems.length - 1 ? 'disabled' : ''} aria-label="Move ${esc(x.restaurant_name)} down">↓</button>
-          <button class="btn btn-small btn-danger route-rm" data-id="${x.id}" aria-label="Remove ${esc(x.restaurant_name)} from route">✕</button>
-        </div>
-      </div>`).join('')}</div>
-      ${missingIds.length ? `<div class="warning-banner">${missingIds.length} unavailable route stop${missingIds.length === 1 ? '' : 's'} retained. Remove it only if you no longer need it.</div>` : ''}
+      <div class="route-list">${routeEntriesList.map((entry, index) => entry.kind === 'missing'
+        ? unavailableRouteRow(entry.id, index)
+        : `<div class="route-item">
+            <span class="route-num">${index + 1}.</span>
+            <div class="route-info"><div class="route-name">${esc(entry.prospect.restaurant_name)}</div><div class="route-addr">${esc(entry.prospect.address_normalized || entry.prospect.address_input)}</div></div>
+            <div class="route-ctrls">
+              <button class="btn btn-small btn-secondary route-up" data-idx="${index}" ${index === 0 ? 'disabled' : ''} aria-label="Move ${esc(entry.prospect.restaurant_name)} up">↑</button>
+              <button class="btn btn-small btn-secondary route-dn" data-idx="${index}" ${index === routeCount - 1 ? 'disabled' : ''} aria-label="Move ${esc(entry.prospect.restaurant_name)} down">↓</button>
+              <button class="btn btn-small btn-danger route-rm" data-id="${entry.prospect.id}" aria-label="Remove ${esc(entry.prospect.restaurant_name)} from route">✕</button>
+            </div>
+          </div>`).join('')}</div>
       <button class="btn btn-secondary btn-full" id="btn-clear-route">Clear Route</button>
-      <button class="btn btn-primary btn-full btn-send-gmaps" id="btn-send-gmaps">🗺️ Send ${routeItems.length} Stop${routeItems.length !== 1 ? 's' : ''} to Google Maps</button>
+      <button class="btn btn-primary btn-full btn-send-gmaps" id="btn-send-gmaps">🗺️ Send ${routeCount} Stop${routeCount !== 1 ? 's' : ''} to Google Maps</button>
     </div>` : ''}
     <div class="prospect-list">${loading ? '<div class="empty-state"><span class="empty-icon">⚡</span><span class="empty-text">One way or another, this darkness has got to give...</span></div>' : !listProspects.length ? `<div class="empty-state"><span class="empty-text">${searchQuery ? 'No matches with those list options.' : 'Nothing matches those list options yet.'}</span></div>` : listProspects.map(x => `<div class="prospect-item" data-id="${x.id}"><div class="prospect-info"><div class="prospect-name">${isInRoute(x.id) ? '<span class="route-badge-sm">⚡</span> ' : ''}${esc(x.restaurant_name)}</div><div class="prospect-address">${esc(x.address_normalized || x.address_input)}</div></div><div class="prospect-actions-row">${x.dropped_off ? '<span class="badge badge-dropped">🌹 Dropped</span>' : ''}<button class="btn btn-small btn-secondary pl-view" data-id="${x.id}">View</button><button class="btn btn-small btn-status ${x.dropped_off ? 'dropped' : 'pending'} pl-toggle" data-id="${x.id}" data-dr="${x.dropped_off}">${x.dropped_off ? '🌹' : 'Drop'}</button></div></div>`).join('')}</div>`;
   document.getElementById('btn-pl-add')?.addEventListener('click', () => { resetAdd(); panelView = 'panel-add'; renderPanel(); });
