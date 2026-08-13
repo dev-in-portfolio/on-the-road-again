@@ -2,10 +2,11 @@ import type * as maplibregl from 'maplibre-gl';
 import {
   fetchProspects, createProspect, updateProspect,
   toggleDroppedOff, archiveProspect, restoreProspect, deleteProspect,
-  geocodeAutocomplete, geocodeSearch,
+  geocodeAutocomplete, geocodeSearch, getAccessSession, signIn,
 } from './api/client';
 import { Prospect, AutocompleteSuggestion, CreateProspectInput } from './types/prospect';
 import { buildGoogleMapsDirectionsUrl } from './google-maps';
+import { addRouteStop, moveRouteStop, removeRouteStop, resolveRoute } from './route-state';
 
 // ─── Constants ─────────────────────────────────────────
 const DEFAULT_CENTER: [number, number] = [-95.7129, 37.0902];
@@ -14,16 +15,26 @@ const SINGLE_ZOOM = 15;
 
 // ─── State ─────────────────────────────────────────────
 let prospects: Prospect[] = [];
+// Complete active prospect data. Search changes only `prospects`, never this
+// canonical store or the saved route.
+let activeProspects: Prospect[] = [];
 let archivedProspects: Prospect[] = [];
 let loading = true;
 let archivedLoading = false;
 let errorMessage: string | null = null;
 let submitting = false;
 
-type View = 'panel-list' | 'panel-add' | 'panel-detail' | 'panel-edit' | 'panel-archived' | 'panel-import';
+type View = 'panel-list' | 'panel-route' | 'panel-add' | 'panel-detail' | 'panel-edit' | 'panel-archived' | 'panel-import';
 let panelView: View = 'panel-list';
 let selectedProspectId: string | null = null;
 let searchQuery = '';
+let searchAbort: AbortController | null = null;
+let searchTimer: ReturnType<typeof setTimeout> | null = null;
+let searchRequestSequence = 0;
+type ListFilter = 'all' | 'not-dropped' | 'dropped' | 'route';
+type ListSort = 'nearby' | 'name';
+let listFilter: ListFilter = 'all';
+let listSort: ListSort = 'nearby';
 
 let addStep: 'entry' | 'confirm' | 'duplicate' = 'entry';
 let addName = '', addAddress = '', addNormalized = '';
@@ -164,32 +175,29 @@ function loadRoute(): string[] {
 function saveRoute() { try { localStorage.setItem(ROUTE_KEY, JSON.stringify(routeIds)); } catch { /* storage unavailable */ } }
 function getRouteIndex(id: string): number { return routeIds.indexOf(id); }
 function isInRoute(id: string): boolean { return routeIds.indexOf(id) >= 0; }
-
-function reconcileRoute() {
-  // Remove stale IDs: prospects that are no longer active (archived, deleted, or missing coords)
-  const activeIds = new Set(prospects.filter(p => p.latitude != null && p.longitude != null).map(p => p.id));
-  const cleaned = routeIds.filter(id => activeIds.has(id));
-  if (cleaned.length !== routeIds.length) { routeIds = cleaned; saveRoute(); }
-}
+function getRouteResolution() { return resolveRoute(routeIds, activeProspects); }
 
 function addToRoute(id: string): string | null {
-  if (isInRoute(id)) return null;
-  if (routeIds.length >= MAX_ROUTE) return `Route is full — maximum ${MAX_ROUTE} stops.`;
-  routeIds.push(id);
+  const next = addRouteStop(routeIds, id, MAX_ROUTE);
+  if (!next) return `Route is full — maximum ${MAX_ROUTE} stops.`;
+  if (next === routeIds) return null;
+  routeIds = next;
   saveRoute();
   refreshMarkers();
   return null;
 }
 function removeFromRoute(id: string) {
-  routeIds = routeIds.filter(rid => rid !== id);
+  routeIds = removeRouteStop(routeIds, id);
   saveRoute();
   refreshMarkers();
 }
 function moveRouteItem(idx: number, dir: -1 | 1) {
-  const nxt = idx + dir; if (nxt < 0 || nxt >= routeIds.length) return;
-  [routeIds[idx], routeIds[nxt]] = [routeIds[nxt], routeIds[idx]];
+  const next = moveRouteStop(routeIds, idx, dir);
+  if (next === routeIds) return;
+  routeIds = next;
   saveRoute();
   refreshMarkers();
+  renderPanel();
 }
 function clearRoute() {
   if (!routeIds.length) return;
@@ -202,8 +210,9 @@ function clearRoute() {
 // ─── Google Maps Handoff ───────────────────────────────
 
 function buildGoogleMapsUrl(origin: [number, number] | null): string | { error: string } {
-  const items = routeIds.map(id => getById(id)).filter(Boolean) as Prospect[];
+  const { items, missingIds } = getRouteResolution();
   if (items.length === 0) return { error: 'Select at least one restaurant first.' };
+  if (missingIds.length) return { error: 'One or more route stops are unavailable. Remove them from Current Route before sending.' };
 
   const invalid = items.filter(p => p.latitude == null || p.longitude == null);
   if (invalid.length > 0) {
@@ -462,6 +471,7 @@ function setCurrentLocation(coordinates: [number, number]) {
   } else {
     currentLocationMarker.setLngLat(coordinates);
   }
+  if (panelView === 'panel-list' && listSort === 'nearby') renderPanel();
 }
 
 function requestCurrentLocation(flyToLocation: boolean): Promise<[number, number] | null> {
@@ -499,28 +509,58 @@ function setupMapControls() {
   const mc = document.getElementById('map-container');
   if (!mc) return;
   const div = document.createElement('div'); div.id = 'map-controls';
-  div.innerHTML = `<button class="map-ctrl-btn" id="btn-locate" title="Locate Me" aria-label="Locate Me">📍</button><button class="map-ctrl-btn" id="btn-map-add" title="Add Prospect" aria-label="Add Prospect">＋</button>`;
+  div.innerHTML = `<button class="map-ctrl-btn route-control" id="btn-current-route" title="Open Current Route" aria-label="Open Current Route">ROUTE · 0</button><button class="map-ctrl-btn" id="btn-locate" title="Locate Me" aria-label="Locate Me">📍</button><button class="map-ctrl-btn" id="btn-map-add" title="Add Prospect" aria-label="Add Prospect">＋</button>`;
   mc.appendChild(div);
+  document.getElementById('btn-current-route')?.addEventListener('click', () => { panelView = 'panel-route'; renderPanel(); });
   document.getElementById('btn-locate')?.addEventListener('click', handleLocate);
   document.getElementById('btn-map-add')?.addEventListener('click', () => { resetAdd(); panelView = 'panel-add'; renderPanel(); });
+}
+
+function updateRouteControl() {
+  const button = document.getElementById('btn-current-route');
+  if (!button) return;
+  button.textContent = `ROUTE · ${routeIds.length}`;
+  button.setAttribute('aria-label', `Open Current Route, ${routeIds.length} stop${routeIds.length === 1 ? '' : 's'}`);
 }
 
 function updateSearchBar() {
   const sb = document.getElementById('search-bar'); if (!sb) return;
   sb.innerHTML = `<input type="search" id="shell-search" class="form-input search-input" placeholder="Search prospects..." autocomplete="off" value="${esc(searchQuery)}">${searchQuery ? '<button class="btn btn-small btn-secondary" id="shell-clear">✕</button>' : ''}`;
-  document.getElementById('shell-search')?.addEventListener('input', e => { searchQuery = (e.target as HTMLInputElement).value; loadData(); });
-  document.getElementById('shell-clear')?.addEventListener('click', () => { searchQuery = ''; loadData(); });
+  document.getElementById('shell-search')?.addEventListener('input', e => { searchQuery = (e.target as HTMLInputElement).value; scheduleSearch(); });
+  document.getElementById('shell-clear')?.addEventListener('click', () => { searchQuery = ''; scheduleSearch(true); });
+}
+
+function scheduleSearch(immediate = false) {
+  if (searchTimer) clearTimeout(searchTimer);
+  if (searchAbort) searchAbort.abort();
+  const run = () => { void loadData(); };
+  searchTimer = immediate ? null : setTimeout(run, 220);
+  if (immediate) run();
 }
 
 // ─── Data ──────────────────────────────────────────────
 async function loadData() {
+  const requestSequence = ++searchRequestSequence;
+  searchAbort?.abort();
+  const controller = new AbortController();
+  searchAbort = controller;
   loading = true; errorMessage = null; renderPanel();
-  try { prospects = await fetchProspects(searchQuery || undefined, false); }
-  catch (e: unknown) { errorMessage = e instanceof Error ? e.message : 'Failed to load.'; }
+  try {
+    const visible = await fetchProspects(searchQuery || undefined, false, controller.signal);
+    if (requestSequence !== searchRequestSequence) return;
+    prospects = visible;
+    // Search results are display-only. The unfiltered load hydrates the route's
+    // canonical source of truth and is never replaced by a filtered result.
+    if (!searchQuery) activeProspects = visible;
+  }
+  catch (e: unknown) {
+    if (requestSequence !== searchRequestSequence || (e instanceof DOMException && e.name === 'AbortError')) return;
+    errorMessage = e instanceof Error ? e.message : 'Failed to load.';
+  }
   finally {
+    if (requestSequence !== searchRequestSequence) return;
     loading = false;
     void createMap();
-    reconcileRoute();
     refreshMarkers();
     // Render first: fitMap uses the panel's real overlay height.
     renderPanel();
@@ -623,14 +663,14 @@ async function confirmAdd() {
   try {
     const r = await createProspect(inp);
     if ('code' in r && r.code === 'DUPLICATE_DETECTED') { addDuplicates = r.duplicates; addStep = 'duplicate'; submitting = false; renderPanel(); return; }
-    prospects.unshift(r as Prospect); resetAdd(); panelView = 'panel-list'; refreshMarkers(); submitting = false; renderPanel();
+    const created = r as Prospect; prospects.unshift(created); activeProspects.unshift(created); resetAdd(); panelView = 'panel-list'; refreshMarkers(); submitting = false; renderPanel();
   } catch (er: unknown) { errorMessage = er instanceof Error ? er.message : "Couldn't save."; submitting = false; renderPanel(); }
 }
 
 async function confirmAddDup() {
   submitting = true; renderPanel();
   const inp: CreateProspectInput = { restaurant_name: addName, address_input: addAddress, address_normalized: addNormalized || null, latitude: addLat, longitude: addLon, geocode_provider: addLat !== null ? 'Geoapify' : null, geocode_reference: addPlaceId || null, skip_duplicate_check: true };
-  try { prospects.unshift(await createProspect(inp) as Prospect); resetAdd(); panelView = 'panel-list'; refreshMarkers(); submitting = false; renderPanel(); }
+  try { const created = await createProspect(inp) as Prospect; prospects.unshift(created); activeProspects.unshift(created); resetAdd(); panelView = 'panel-list'; refreshMarkers(); submitting = false; renderPanel(); }
   catch (er: unknown) { errorMessage = er instanceof Error ? er.message : "Couldn't save."; submitting = false; renderPanel(); }
 }
 
@@ -668,19 +708,19 @@ async function confirmEdit() {
   try {
     const r = await updateProspect({ id: selectedProspectId, restaurant_name: edName, address_input: edAddr, address_normalized: edNorm || null, latitude: edLat, longitude: edLon, geocode_provider: edLat !== null ? 'Geoapify' : null, geocode_reference: edPid || null });
     if ('code' in r && r.code === 'DUPLICATE_DETECTED') { edDups = r.duplicates; edStep = 'duplicate'; submitting = false; renderPanel(); return; }
-    const u = r as Prospect; prospects = prospects.map(p => p.id === u.id ? u : p); selectedProspectId = u.id; panelView = 'panel-detail'; refreshMarkers(); submitting = false; renderPanel();
+    const u = r as Prospect; prospects = prospects.map(p => p.id === u.id ? u : p); activeProspects = activeProspects.map(p => p.id === u.id ? u : p); selectedProspectId = u.id; panelView = 'panel-detail'; refreshMarkers(); submitting = false; renderPanel();
   } catch (er: unknown) { errorMessage = er instanceof Error ? er.message : 'Failed to update.'; submitting = false; renderPanel(); }
 }
 
 async function confirmEditDup() {
   if (!selectedProspectId) return; submitting = true; renderPanel();
-  try { const r = await updateProspect({ id: selectedProspectId, restaurant_name: edName, address_input: edAddr, address_normalized: edNorm || null, latitude: edLat, longitude: edLon, geocode_provider: edLat !== null ? 'Geoapify' : null, geocode_reference: edPid || null, skip_duplicate_check: true }); const u = r as Prospect; prospects = prospects.map(p => p.id === u.id ? u : p); selectedProspectId = u.id; panelView = 'panel-detail'; refreshMarkers(); submitting = false; renderPanel(); }
+  try { const r = await updateProspect({ id: selectedProspectId, restaurant_name: edName, address_input: edAddr, address_normalized: edNorm || null, latitude: edLat, longitude: edLon, geocode_provider: edLat !== null ? 'Geoapify' : null, geocode_reference: edPid || null, skip_duplicate_check: true }); const u = r as Prospect; prospects = prospects.map(p => p.id === u.id ? u : p); activeProspects = activeProspects.map(p => p.id === u.id ? u : p); selectedProspectId = u.id; panelView = 'panel-detail'; refreshMarkers(); submitting = false; renderPanel(); }
   catch (er: unknown) { errorMessage = er instanceof Error ? er.message : 'Failed to update.'; submitting = false; renderPanel(); }
 }
 
 // ─── Actions ───────────────────────────────────────────
 async function handleToggleDropped(id: string, cur: boolean) {
-  try { const u = await toggleDroppedOff(id, cur); prospects = prospects.map(p => p.id === id ? u : p); refreshMarkers(); if (panelView === 'panel-detail' && selectedProspectId === id) renderPanel(); else if (panelView === 'panel-list') renderPanel(); }
+  try { const u = await toggleDroppedOff(id, cur); prospects = prospects.map(p => p.id === id ? u : p); activeProspects = activeProspects.map(p => p.id === id ? u : p); refreshMarkers(); if ((panelView === 'panel-detail' && selectedProspectId === id) || panelView === 'panel-list' || panelView === 'panel-route') renderPanel(); }
   catch (e: unknown) { errorMessage = e instanceof Error ? e.message : 'Failed.'; renderPanel(); }
 }
 
@@ -688,7 +728,7 @@ async function handleArchive(id: string) {
   try {
     const archived = await archiveProspect(id);
     archivedProspects = [archived, ...archivedProspects.filter(p => p.id !== id)];
-    removeFromRoute(id); prospects = prospects.filter(p => p.id !== id); refreshMarkers();
+    prospects = prospects.filter(p => p.id !== id); activeProspects = activeProspects.filter(p => p.id !== id); refreshMarkers();
     if (selectedProspectId === id) { selectedProspectId = null; panelView = 'panel-list'; }
     renderPanel();
   }
@@ -699,7 +739,7 @@ async function handleRestore(id: string) {
   try {
     const u = await restoreProspect(id);
     archivedProspects = archivedProspects.filter(p => p.id !== id);
-    prospects.unshift(u); refreshMarkers();
+    prospects.unshift(u); activeProspects.unshift(u); refreshMarkers();
     if (selectedProspectId === id) { selectedProspectId = id; panelView = 'panel-detail'; }
     renderPanel();
   }
@@ -708,25 +748,56 @@ async function handleRestore(id: string) {
 
 async function handleDelete(id: string) {
   if (!confirm('Permanently delete?')) return;
-  try { await deleteProspect(id); removeFromRoute(id); prospects = prospects.filter(p => p.id !== id); refreshMarkers(); if (selectedProspectId === id) { selectedProspectId = null; panelView = 'panel-list'; } renderPanel(); }
+  try { await deleteProspect(id); removeFromRoute(id); prospects = prospects.filter(p => p.id !== id); activeProspects = activeProspects.filter(p => p.id !== id); refreshMarkers(); if (selectedProspectId === id) { selectedProspectId = null; panelView = 'panel-list'; } renderPanel(); }
   catch (e: unknown) { errorMessage = e instanceof Error ? e.message : 'Failed.'; renderPanel(); }
 }
 
-function getById(id: string): Prospect | undefined { return prospects.find(p => p.id === id); }
+function getById(id: string): Prospect | undefined { return activeProspects.find(p => p.id === id); }
 
 // ─── Panel Render ──────────────────────────────────────
 function renderPanel() {
   const p = document.getElementById('panel-container'); if (!p) return;
-  switch (panelView) { case 'panel-list': rList(p); break; case 'panel-add': rAdd(p); break; case 'panel-detail': rDetail(p); break; case 'panel-edit': rEdit(p); break; case 'panel-archived': rArch(p); break; case 'panel-import': rImport(p); break; }
+  switch (panelView) { case 'panel-list': rList(p); break; case 'panel-route': rRoute(p); break; case 'panel-add': rAdd(p); break; case 'panel-detail': rDetail(p); break; case 'panel-edit': rEdit(p); break; case 'panel-archived': rArch(p); break; case 'panel-import': rImport(p); break; }
+  updateRouteControl();
+}
+
+function rRoute(p: HTMLElement) {
+  const { items, missingIds } = getRouteResolution();
+  p.innerHTML = `<div class="panel-header"><button class="btn btn-back" id="btn-route-back">← Map</button><h1 class="app-title" style="font-size:1.15rem;">Current Route</h1></div>
+    ${errorMessage ? `<div class="error-banner">${esc(errorMessage)}</div>` : ''}
+    <div class="card route-tray">
+      <div class="card-title"><span>Leave-Behind Route</span><span class="badge badge-pending">${routeIds.length} / ${MAX_ROUTE}</span></div>
+      ${items.length ? `<div class="route-list">${items.map((item, index) => `<div class="route-item route-work-item">
+        <span class="route-num">${index + 1}.</span>
+        <div class="route-info"><div class="route-name">${esc(item.restaurant_name)}</div><div class="route-addr">${esc(item.address_normalized || item.address_input)}</div>${item.dropped_off ? '<span class="badge badge-dropped">🌹 Dropped Off</span>' : ''}</div>
+        <div class="route-ctrls">
+          <button class="btn btn-small btn-secondary route-up" data-idx="${index}" ${index === 0 ? 'disabled' : ''} aria-label="Move ${esc(item.restaurant_name)} up">↑</button>
+          <button class="btn btn-small btn-secondary route-dn" data-idx="${index}" ${index === items.length - 1 ? 'disabled' : ''} aria-label="Move ${esc(item.restaurant_name)} down">↓</button>
+          <button class="btn btn-small btn-status ${item.dropped_off ? 'dropped' : 'pending'} route-drop" data-id="${item.id}" data-dr="${item.dropped_off}">${item.dropped_off ? 'Undo' : 'Drop'}</button>
+          <button class="btn btn-small btn-danger route-rm" data-id="${item.id}" aria-label="Remove ${esc(item.restaurant_name)} from route">✕</button>
+        </div>
+      </div>`).join('')}</div>` : '<div class="empty-state"><span class="empty-text">No stops yet. Tap map pins to build your route.</span></div>'}
+      ${missingIds.length ? `<div class="warning-banner">${missingIds.length} unavailable route stop${missingIds.length === 1 ? '' : 's'} retained. Remove it only if you no longer need it.</div>` : ''}
+      ${items.length ? `<button class="btn btn-primary btn-full btn-send-gmaps" id="btn-send-gmaps">Open ${items.length} Stop${items.length === 1 ? '' : 's'} in Google Maps</button><button class="btn btn-secondary btn-full" id="btn-clear-route">Clear Route</button>` : ''}
+    </div>`;
+  document.getElementById('btn-route-back')?.addEventListener('click', () => { panelView = 'panel-list'; renderPanel(); });
+  document.getElementById('btn-clear-route')?.addEventListener('click', () => { clearRoute(); panelView = 'panel-route'; renderPanel(); });
+  document.getElementById('btn-send-gmaps')?.addEventListener('click', handleSendToGoogleMaps);
+  p.querySelectorAll('.route-up').forEach(button => button.addEventListener('click', () => moveRouteItem(parseInt(button.getAttribute('data-idx')!), -1)));
+  p.querySelectorAll('.route-dn').forEach(button => button.addEventListener('click', () => moveRouteItem(parseInt(button.getAttribute('data-idx')!), 1)));
+  p.querySelectorAll('.route-rm').forEach(button => button.addEventListener('click', () => { removeFromRoute(button.getAttribute('data-id')!); renderPanel(); }));
+  p.querySelectorAll('.route-drop').forEach(button => button.addEventListener('click', () => { void handleToggleDropped(button.getAttribute('data-id')!, button.getAttribute('data-dr') === 'true'); }));
 }
 
 function rList(p: HTMLElement) {
   const nc = prospects.filter(x => x.latitude == null || x.longitude == null).length;
-  const routeItems = routeIds.map(id => getById(id)).filter(Boolean) as Prospect[];
+  const { items: routeItems, missingIds } = getRouteResolution();
+  const listProspects = getListProspects();
   p.innerHTML = `<div class="panel-header"><h1 class="app-title">ON THE ROAD AGAIN</h1><p class="app-subtitle">${prospects.length} prospect${prospects.length !== 1 ? 's' : ''}</p></div>
     ${errorMessage ? `<div class="error-banner">${esc(errorMessage)}</div>` : ''}
     ${nc > 0 && !loading ? `<div class="info-banner">${nc} prospect${nc !== 1 ? 's' : ''} need${nc === 1 ? 's' : ''} an address update for the map.</div>` : ''}
     <div class="panel-actions-row"><button class="btn btn-primary" id="btn-pl-add">+ Add Prospect</button><button class="btn btn-secondary" id="btn-pl-arch">📦 Archived</button><button class="btn btn-secondary" id="btn-pl-import">📋 Import</button></div>
+    <div class="list-tools" aria-label="Prospect list options"><label class="sr-only" for="list-filter">Filter prospects</label><select class="form-input list-select" id="list-filter"><option value="all" ${listFilter === 'all' ? 'selected' : ''}>All prospects</option><option value="not-dropped" ${listFilter === 'not-dropped' ? 'selected' : ''}>Not dropped off</option><option value="dropped" ${listFilter === 'dropped' ? 'selected' : ''}>Dropped off</option><option value="route" ${listFilter === 'route' ? 'selected' : ''}>In Current Route</option></select><label class="sr-only" for="list-sort">Sort prospects</label><select class="form-input list-select" id="list-sort"><option value="nearby" ${listSort === 'nearby' ? 'selected' : ''}>${currentLocation ? 'Nearest first' : 'A–Z (locate me for nearby)'}</option><option value="name" ${listSort === 'name' ? 'selected' : ''}>A–Z</option></select></div>
     ${routeItems.length > 0 ? `<div class="card route-tray">
       <div class="card-title"><span>⚡ Current Route</span><span class="badge badge-pending">${routeItems.length} / ${MAX_ROUTE}</span></div>
       <div class="route-hint">Choose up to 9 restaurants. Your current location is the route start.</div>
@@ -739,13 +810,16 @@ function rList(p: HTMLElement) {
           <button class="btn btn-small btn-danger route-rm" data-id="${x.id}" aria-label="Remove ${esc(x.restaurant_name)} from route">✕</button>
         </div>
       </div>`).join('')}</div>
+      ${missingIds.length ? `<div class="warning-banner">${missingIds.length} unavailable route stop${missingIds.length === 1 ? '' : 's'} retained. Remove it only if you no longer need it.</div>` : ''}
       <button class="btn btn-secondary btn-full" id="btn-clear-route">Clear Route</button>
       <button class="btn btn-primary btn-full btn-send-gmaps" id="btn-send-gmaps">🗺️ Send ${routeItems.length} Stop${routeItems.length !== 1 ? 's' : ''} to Google Maps</button>
     </div>` : ''}
-    <div class="prospect-list">${loading ? '<div class="empty-state"><span class="empty-icon">⚡</span><span class="empty-text">One way or another, this darkness has got to give...</span></div>' : !prospects.length ? `<div class="empty-state"><span class="empty-icon">🌹</span><span class="empty-text">${searchQuery ? 'No matches found on this long, strange trip.' : "What a long, strange trip it's been — add your first stop."}</span></div>` : prospects.map(x => `<div class="prospect-item" data-id="${x.id}"><div class="prospect-info"><div class="prospect-name">${esc(x.restaurant_name)}</div><div class="prospect-address">${esc(x.address_normalized || x.address_input)}</div></div><div class="prospect-actions-row">${x.dropped_off ? '<span class="badge badge-dropped">🌹 Dropped</span>' : ''}<button class="btn btn-small btn-secondary pl-view" data-id="${x.id}">View</button><button class="btn btn-small btn-status ${x.dropped_off ? 'dropped' : 'pending'} pl-toggle" data-id="${x.id}" data-dr="${x.dropped_off}">${x.dropped_off ? '🌹' : 'Drop'}</button></div></div>`).join('')}</div>`;
+    <div class="prospect-list">${loading ? '<div class="empty-state"><span class="empty-icon">⚡</span><span class="empty-text">One way or another, this darkness has got to give...</span></div>' : !listProspects.length ? `<div class="empty-state"><span class="empty-text">${searchQuery ? 'No matches with those list options.' : 'Nothing matches those list options yet.'}</span></div>` : listProspects.map(x => `<div class="prospect-item" data-id="${x.id}"><div class="prospect-info"><div class="prospect-name">${isInRoute(x.id) ? '<span class="route-badge-sm">⚡</span> ' : ''}${esc(x.restaurant_name)}</div><div class="prospect-address">${esc(x.address_normalized || x.address_input)}</div></div><div class="prospect-actions-row">${x.dropped_off ? '<span class="badge badge-dropped">🌹 Dropped</span>' : ''}<button class="btn btn-small btn-secondary pl-view" data-id="${x.id}">View</button><button class="btn btn-small btn-status ${x.dropped_off ? 'dropped' : 'pending'} pl-toggle" data-id="${x.id}" data-dr="${x.dropped_off}">${x.dropped_off ? '🌹' : 'Drop'}</button></div></div>`).join('')}</div>`;
   document.getElementById('btn-pl-add')?.addEventListener('click', () => { resetAdd(); panelView = 'panel-add'; renderPanel(); });
   document.getElementById('btn-pl-arch')?.addEventListener('click', () => { void showArchived(); });
   document.getElementById('btn-pl-import')?.addEventListener('click', () => { resetImport(); panelView = 'panel-import'; renderPanel(); });
+  document.getElementById('list-filter')?.addEventListener('change', event => { listFilter = (event.target as HTMLSelectElement).value as ListFilter; renderPanel(); });
+  document.getElementById('list-sort')?.addEventListener('change', event => { listSort = (event.target as HTMLSelectElement).value as ListSort; renderPanel(); });
   document.getElementById('btn-clear-route')?.addEventListener('click', clearRoute);
   document.getElementById('btn-send-gmaps')?.addEventListener('click', handleSendToGoogleMaps);
   p.querySelectorAll('.route-up').forEach(b => b.addEventListener('click', () => moveRouteItem(parseInt(b.getAttribute('data-idx')!), -1)));
@@ -755,6 +829,33 @@ function rList(p: HTMLElement) {
   p.querySelectorAll('.pl-view').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); const id = b.getAttribute('data-id'); if (id) { selectedProspectId = id; panelView = 'panel-detail'; renderPanel(); } }));
   p.querySelectorAll('.pl-toggle').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); handleToggleDropped(b.getAttribute('data-id')!, b.getAttribute('data-dr') === 'true'); }));
   updateSearchBar();
+}
+
+function getListProspects(): Prospect[] {
+  const filtered = prospects.filter(prospect => {
+    if (listFilter === 'not-dropped') return !prospect.dropped_off;
+    if (listFilter === 'dropped') return prospect.dropped_off;
+    if (listFilter === 'route') return isInRoute(prospect.id);
+    return true;
+  });
+  return [...filtered].sort((a, b) => {
+    if (listSort === 'nearby' && currentLocation) {
+      const distanceA = distanceFromCurrentLocation(a);
+      const distanceB = distanceFromCurrentLocation(b);
+      if (distanceA !== distanceB) return distanceA - distanceB;
+    }
+    return a.restaurant_name.localeCompare(b.restaurant_name);
+  });
+}
+
+function distanceFromCurrentLocation(prospect: Prospect): number {
+  if (!currentLocation || prospect.latitude == null || prospect.longitude == null) return Number.POSITIVE_INFINITY;
+  const [originLon, originLat] = currentLocation;
+  const latitudeRadians = Math.PI / 180;
+  const dLat = (prospect.latitude - originLat) * latitudeRadians;
+  const dLon = (prospect.longitude - originLon) * latitudeRadians;
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(originLat * latitudeRadians) * Math.cos(prospect.latitude * latitudeRadians) * Math.sin(dLon / 2) ** 2;
+  return 3958.8 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
 function rAdd(p: HTMLElement) {
@@ -952,6 +1053,36 @@ function rImport(p: HTMLElement) {
 function esc(s: string): string { return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;'); }
 
 // ─── Bootstrap ─────────────────────────────────────────
-setupShell();
-routeIds = loadRoute();
-loadData();
+async function bootstrap() {
+  try {
+    const session = await getAccessSession();
+    if (!session.authenticated) return renderAccessGate();
+    setupShell();
+    routeIds = loadRoute();
+    void loadData();
+  } catch (error: unknown) {
+    renderAccessGate(error instanceof Error ? error.message : 'Private access is unavailable.');
+  }
+}
+
+function renderAccessGate(message = '') {
+  const app = document.getElementById('app')!;
+  app.innerHTML = `<main class="access-gate"><section class="access-card"><p class="access-kicker">DARK STAR CONSULTING</p><h1>ON THE ROAD AGAIN</h1><p>This is a private field tool.</p>${message ? `<div class="error-banner">${esc(message)}</div>` : ''}<form id="access-form"><label class="form-label" for="access-code">Access code</label><input class="form-input" id="access-code" type="password" autocomplete="current-password" required autofocus><button class="btn btn-primary btn-full" type="submit">Open Field Tool</button></form></section></main>`;
+  document.getElementById('access-form')?.addEventListener('submit', async event => {
+    event.preventDefault();
+    const input = document.getElementById('access-code') as HTMLInputElement;
+    const button = (event.currentTarget as HTMLFormElement).querySelector('button') as HTMLButtonElement;
+    button.disabled = true; button.textContent = 'Opening...';
+    try {
+      const session = await signIn(input.value);
+      if (!session.authenticated) throw new Error('Private access was not granted.');
+      setupShell();
+      routeIds = loadRoute();
+      void loadData();
+    } catch (error: unknown) {
+      renderAccessGate(error instanceof Error ? error.message : 'Private access was not granted.');
+    }
+  });
+}
+
+void bootstrap();

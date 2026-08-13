@@ -9,12 +9,35 @@ import {
 
 const API_BASE = '/api/prospects';
 const GEOCODE_BASE = '/api/geocode';
+const AUTH_BASE = '/api/auth';
+
+export type AccessSession = { authenticated: boolean };
+
+export async function getAccessSession(): Promise<AccessSession> {
+  const res = await fetch(AUTH_BASE, { credentials: 'same-origin' });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Unable to check private access.');
+  return data as AccessSession;
+}
+
+export async function signIn(accessCode: string): Promise<AccessSession> {
+  const res = await fetch(AUTH_BASE, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ accessCode }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Unable to unlock private access.');
+  return data as AccessSession;
+}
 
 // --- Prospects CRUD ---
 
 export async function fetchProspects(
   search?: string,
-  includeArchived = false
+  includeArchived = false,
+  signal?: AbortSignal,
 ): Promise<Prospect[]> {
   const params = new URLSearchParams();
   if (search) params.set('search', search);
@@ -22,7 +45,7 @@ export async function fetchProspects(
   const qs = params.toString();
   const url = qs ? `${API_BASE}?${qs}` : API_BASE;
 
-  const res = await fetch(url);
+  const res = await fetch(url, { signal });
   if (!res.ok) {
     const errorData = await res.json().catch(() => ({}));
     throw new Error(errorData.error || `Failed to fetch prospects (Status ${res.status})`);

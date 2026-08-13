@@ -6,7 +6,7 @@
 
 ## Current Phase 1 Scope
 
-Phase 1 provides a streamlined mobile-first interface for field sales reps to:
+The current app provides a streamlined mobile-first interface for field sales reps to:
 
 - Enter and permanently save restaurant/business prospect names and addresses.
 - **Address autocomplete** using Geoapify (server-mediated via Netlify Functions).
@@ -17,9 +17,13 @@ Phase 1 provides a streamlined mobile-first interface for field sales reps to:
 - **Archive/restore** prospects.
 - **Dropped Off / Not Dropped Off** status with instant persistence and undo.
 - Store canonical prospect data in **Turso** (libSQL database).
-- Prepare data structures for future MapLibre GL mapping and Google Maps route handoff.
+- Use a MapLibre GL map with saved prospect pins.
+- Build a persistent Current Route from map pins or prospect details.
+- Reorder and remove route stops manually; route order survives search, status updates, refreshes, and returning from Google Maps.
+- Mark a stop Dropped Off without removing it from the current route.
+- Open the ordered route in Google Maps for editable directions and navigation.
 
-> **Note:** Advanced features such as full CRM systems, automated route optimization, mileage tracking, and multi-user collaboration are explicitly out of scope for Phase 1.
+> **Note:** Advanced features such as full CRM systems, automated route optimization, mileage tracking, and multi-user collaboration remain explicitly out of scope.
 
 ---
 
@@ -102,7 +106,28 @@ npx netlify dev
 ```bash
 npm run typecheck
 npm run build
+npm test
 ```
+
+## Field workflow
+
+1. Use the map to inspect prospect pins.
+2. Add the restaurants receiving leave-behinds to **Current Route**.
+3. Open **ROUTE · n** to review, reorder, remove, or mark a stop Dropped Off.
+4. Open the completed route in Google Maps, where final directions and any last-mile rearranging remain editable.
+
+Current Route is stored locally on the device. Search and list filters only change what is displayed; they never alter saved route membership or ordering.
+
+## Private access
+
+The app uses one shared private access code, checked only by the server. Configure these Netlify environment variables before deploying the access-control update:
+
+```text
+OTRA_ACCESS_CODE=<shared field-tool access code>
+OTRA_SESSION_SECRET=<long random signing secret>
+```
+
+Authenticated sessions use a signed, HTTP-only cookie. The prospects API and Geoapify proxy reject unauthenticated requests and apply basic request-rate limits.
 
 ---
 

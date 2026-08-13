@@ -3,6 +3,8 @@ import { getDb } from '../../server/db/client.js';
 import { ensureSchema } from '../../server/db/schema.js';
 import { Prospect } from '../../src/types/prospect.js';
 import crypto from 'node:crypto';
+import { authorize } from './_shared/auth.js';
+import { rateLimit } from './_shared/rate-limit.js';
 
 // Helper to convert DB row to Prospect JSON model
 function mapRowToProspect(row: Record<string, unknown>): Prospect {
@@ -88,6 +90,10 @@ async function checkDuplicates(
 }
 
 export default async (req: Request, _context: Context) => {
+  const authError = authorize(req);
+  if (authError) return authError;
+  const limitError = rateLimit(req, 'prospects', req.method === 'GET' ? 180 : 60, 60 * 1000);
+  if (limitError) return limitError;
   const method = req.method.toUpperCase();
   const url = new URL(req.url);
 

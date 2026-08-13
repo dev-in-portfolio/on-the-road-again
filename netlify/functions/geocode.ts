@@ -1,7 +1,13 @@
 import type { Context } from '@netlify/functions';
 import { geocodeAutocomplete, geocodeSearch, isHighPrecisionResult } from '../../server/geocode/client.js';
+import { authorize } from './_shared/auth.js';
+import { rateLimit } from './_shared/rate-limit.js';
 
 export default async (req: Request, _context: Context) => {
+  const authError = authorize(req);
+  if (authError) return authError;
+  const limitError = rateLimit(req, 'geocode', 90, 60 * 1000);
+  if (limitError) return limitError;
   const method = req.method.toUpperCase();
   const url = new URL(req.url);
   const action = url.searchParams.get('action') || '';
