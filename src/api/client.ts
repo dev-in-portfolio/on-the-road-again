@@ -9,6 +9,28 @@ import {
 
 const API_BASE = '/api/prospects';
 const GEOCODE_BASE = '/api/geocode';
+const AUTH_BASE = '/api/auth';
+
+export type AccessSession = { authenticated: boolean };
+
+export async function getAccessSession(): Promise<AccessSession> {
+  const res = await fetch(AUTH_BASE, { credentials: 'same-origin' });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Unable to check private access.');
+  return data as AccessSession;
+}
+
+export async function signIn(accessCode: string): Promise<AccessSession> {
+  const res = await fetch(AUTH_BASE, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ accessCode }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || 'Unable to unlock private access.');
+  return data as AccessSession;
+}
 
 // --- Prospects CRUD ---
 
