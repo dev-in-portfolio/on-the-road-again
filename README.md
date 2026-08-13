@@ -118,6 +118,17 @@ npm test
 
 Current Route is stored locally on the device. Search and list filters only change what is displayed; they never alter saved route membership or ordering.
 
+## Private access
+
+The app uses one shared private access code, checked only by the server. Configure these Netlify environment variables before deploying the access-control update:
+
+```text
+OTRA_ACCESS_CODE=<shared field-tool access code>
+OTRA_SESSION_SECRET=<long random signing secret>
+```
+
+Authenticated sessions use a signed, HTTP-only cookie. The prospects API and Geoapify proxy reject unauthenticated requests and apply basic request-rate limits.
+
 ---
 
 ## Deployment Behavior
