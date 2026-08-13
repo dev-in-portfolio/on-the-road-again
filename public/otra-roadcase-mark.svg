@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 420" role="img" aria-labelledby="t d">
+  <title id="t">OTRA road-case field operations mark</title>
+  <desc id="d">Original stencil-style road-case mark for the private field tool.</desc>
+  <g fill="none" stroke="#efe2c3" stroke-width="12" opacity=".95">
+    <rect x="36" y="36" width="828" height="348" rx="8"/>
+    <path d="M36 122h828M36 300h828"/>
+    <path d="M116 36v348M784 36v348"/>
+  </g>
+  <g fill="#efe2c3" font-family="Arial, sans-serif" text-anchor="middle">
+    <text x="450" y="102" font-size="34" font-weight="700" letter-spacing="12">DARK STAR FIELD OPS</text>
+    <text x="450" y="245" font-size="100" font-weight="900" letter-spacing="18">OTRA</text>
+    <text x="450" y="351" font-size="29" font-weight="700" letter-spacing="9">ROAD CREW • PRIVATE TOOL</text>
+  </g>
+  <path d="M170 210h72l-34 38h48" fill="none" stroke="#e8b84a" stroke-width="18" stroke-linecap="square"/>
+  <path d="M730 210h-72l34 38h-48" fill="none" stroke="#d75569" stroke-width="18" stroke-linecap="square"/>
+</svg>
