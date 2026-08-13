@@ -31,6 +31,10 @@ let searchQuery = '';
 let searchAbort: AbortController | null = null;
 let searchTimer: ReturnType<typeof setTimeout> | null = null;
 let searchRequestSequence = 0;
+type ListFilter = 'all' | 'not-dropped' | 'dropped' | 'route';
+type ListSort = 'nearby' | 'name';
+let listFilter: ListFilter = 'all';
+let listSort: ListSort = 'nearby';
 
 let addStep: 'entry' | 'confirm' | 'duplicate' = 'entry';
 let addName = '', addAddress = '', addNormalized = '';
@@ -467,6 +471,7 @@ function setCurrentLocation(coordinates: [number, number]) {
   } else {
     currentLocationMarker.setLngLat(coordinates);
   }
+  if (panelView === 'panel-list' && listSort === 'nearby') renderPanel();
 }
 
 function requestCurrentLocation(flyToLocation: boolean): Promise<[number, number] | null> {
@@ -787,10 +792,12 @@ function rRoute(p: HTMLElement) {
 function rList(p: HTMLElement) {
   const nc = prospects.filter(x => x.latitude == null || x.longitude == null).length;
   const { items: routeItems, missingIds } = getRouteResolution();
+  const listProspects = getListProspects();
   p.innerHTML = `<div class="panel-header"><h1 class="app-title">ON THE ROAD AGAIN</h1><p class="app-subtitle">${prospects.length} prospect${prospects.length !== 1 ? 's' : ''}</p></div>
     ${errorMessage ? `<div class="error-banner">${esc(errorMessage)}</div>` : ''}
     ${nc > 0 && !loading ? `<div class="info-banner">${nc} prospect${nc !== 1 ? 's' : ''} need${nc === 1 ? 's' : ''} an address update for the map.</div>` : ''}
     <div class="panel-actions-row"><button class="btn btn-primary" id="btn-pl-add">+ Add Prospect</button><button class="btn btn-secondary" id="btn-pl-arch">📦 Archived</button><button class="btn btn-secondary" id="btn-pl-import">📋 Import</button></div>
+    <div class="list-tools" aria-label="Prospect list options"><label class="sr-only" for="list-filter">Filter prospects</label><select class="form-input list-select" id="list-filter"><option value="all" ${listFilter === 'all' ? 'selected' : ''}>All prospects</option><option value="not-dropped" ${listFilter === 'not-dropped' ? 'selected' : ''}>Not dropped off</option><option value="dropped" ${listFilter === 'dropped' ? 'selected' : ''}>Dropped off</option><option value="route" ${listFilter === 'route' ? 'selected' : ''}>In Current Route</option></select><label class="sr-only" for="list-sort">Sort prospects</label><select class="form-input list-select" id="list-sort"><option value="nearby" ${listSort === 'nearby' ? 'selected' : ''}>${currentLocation ? 'Nearest first' : 'A–Z (locate me for nearby)'}</option><option value="name" ${listSort === 'name' ? 'selected' : ''}>A–Z</option></select></div>
     ${routeItems.length > 0 ? `<div class="card route-tray">
       <div class="card-title"><span>⚡ Current Route</span><span class="badge badge-pending">${routeItems.length} / ${MAX_ROUTE}</span></div>
       <div class="route-hint">Choose up to 9 restaurants. Your current location is the route start.</div>
@@ -807,10 +814,12 @@ function rList(p: HTMLElement) {
       <button class="btn btn-secondary btn-full" id="btn-clear-route">Clear Route</button>
       <button class="btn btn-primary btn-full btn-send-gmaps" id="btn-send-gmaps">🗺️ Send ${routeItems.length} Stop${routeItems.length !== 1 ? 's' : ''} to Google Maps</button>
     </div>` : ''}
-    <div class="prospect-list">${loading ? '<div class="empty-state"><span class="empty-icon">⚡</span><span class="empty-text">One way or another, this darkness has got to give...</span></div>' : !prospects.length ? `<div class="empty-state"><span class="empty-icon">🌹</span><span class="empty-text">${searchQuery ? 'No matches found on this long, strange trip.' : "What a long, strange trip it's been — add your first stop."}</span></div>` : prospects.map(x => `<div class="prospect-item" data-id="${x.id}"><div class="prospect-info"><div class="prospect-name">${esc(x.restaurant_name)}</div><div class="prospect-address">${esc(x.address_normalized || x.address_input)}</div></div><div class="prospect-actions-row">${x.dropped_off ? '<span class="badge badge-dropped">🌹 Dropped</span>' : ''}<button class="btn btn-small btn-secondary pl-view" data-id="${x.id}">View</button><button class="btn btn-small btn-status ${x.dropped_off ? 'dropped' : 'pending'} pl-toggle" data-id="${x.id}" data-dr="${x.dropped_off}">${x.dropped_off ? '🌹' : 'Drop'}</button></div></div>`).join('')}</div>`;
+    <div class="prospect-list">${loading ? '<div class="empty-state"><span class="empty-icon">⚡</span><span class="empty-text">One way or another, this darkness has got to give...</span></div>' : !listProspects.length ? `<div class="empty-state"><span class="empty-text">${searchQuery ? 'No matches with those list options.' : 'Nothing matches those list options yet.'}</span></div>` : listProspects.map(x => `<div class="prospect-item" data-id="${x.id}"><div class="prospect-info"><div class="prospect-name">${isInRoute(x.id) ? '<span class="route-badge-sm">⚡</span> ' : ''}${esc(x.restaurant_name)}</div><div class="prospect-address">${esc(x.address_normalized || x.address_input)}</div></div><div class="prospect-actions-row">${x.dropped_off ? '<span class="badge badge-dropped">🌹 Dropped</span>' : ''}<button class="btn btn-small btn-secondary pl-view" data-id="${x.id}">View</button><button class="btn btn-small btn-status ${x.dropped_off ? 'dropped' : 'pending'} pl-toggle" data-id="${x.id}" data-dr="${x.dropped_off}">${x.dropped_off ? '🌹' : 'Drop'}</button></div></div>`).join('')}</div>`;
   document.getElementById('btn-pl-add')?.addEventListener('click', () => { resetAdd(); panelView = 'panel-add'; renderPanel(); });
   document.getElementById('btn-pl-arch')?.addEventListener('click', () => { void showArchived(); });
   document.getElementById('btn-pl-import')?.addEventListener('click', () => { resetImport(); panelView = 'panel-import'; renderPanel(); });
+  document.getElementById('list-filter')?.addEventListener('change', event => { listFilter = (event.target as HTMLSelectElement).value as ListFilter; renderPanel(); });
+  document.getElementById('list-sort')?.addEventListener('change', event => { listSort = (event.target as HTMLSelectElement).value as ListSort; renderPanel(); });
   document.getElementById('btn-clear-route')?.addEventListener('click', clearRoute);
   document.getElementById('btn-send-gmaps')?.addEventListener('click', handleSendToGoogleMaps);
   p.querySelectorAll('.route-up').forEach(b => b.addEventListener('click', () => moveRouteItem(parseInt(b.getAttribute('data-idx')!), -1)));
@@ -820,6 +829,33 @@ function rList(p: HTMLElement) {
   p.querySelectorAll('.pl-view').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); const id = b.getAttribute('data-id'); if (id) { selectedProspectId = id; panelView = 'panel-detail'; renderPanel(); } }));
   p.querySelectorAll('.pl-toggle').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); handleToggleDropped(b.getAttribute('data-id')!, b.getAttribute('data-dr') === 'true'); }));
   updateSearchBar();
+}
+
+function getListProspects(): Prospect[] {
+  const filtered = prospects.filter(prospect => {
+    if (listFilter === 'not-dropped') return !prospect.dropped_off;
+    if (listFilter === 'dropped') return prospect.dropped_off;
+    if (listFilter === 'route') return isInRoute(prospect.id);
+    return true;
+  });
+  return [...filtered].sort((a, b) => {
+    if (listSort === 'nearby' && currentLocation) {
+      const distanceA = distanceFromCurrentLocation(a);
+      const distanceB = distanceFromCurrentLocation(b);
+      if (distanceA !== distanceB) return distanceA - distanceB;
+    }
+    return a.restaurant_name.localeCompare(b.restaurant_name);
+  });
+}
+
+function distanceFromCurrentLocation(prospect: Prospect): number {
+  if (!currentLocation || prospect.latitude == null || prospect.longitude == null) return Number.POSITIVE_INFINITY;
+  const [originLon, originLat] = currentLocation;
+  const latitudeRadians = Math.PI / 180;
+  const dLat = (prospect.latitude - originLat) * latitudeRadians;
+  const dLon = (prospect.longitude - originLon) * latitudeRadians;
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(originLat * latitudeRadians) * Math.cos(prospect.latitude * latitudeRadians) * Math.sin(dLon / 2) ** 2;
+  return 3958.8 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
 function rAdd(p: HTMLElement) {
