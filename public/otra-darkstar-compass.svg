@@ -4,5 +4,5 @@
   <path d="m80 19 12 48 49 13-49 13-12 48-13-48-48-13 48-13Z" fill="#e8b84a" stroke="#f0e4c8" stroke-width="3"/>
   <path d="m80 40 7 33 33 7-33 7-7 33-7-33-33-7 33-7Z" fill="#17243a"/>
   <circle cx="80" cy="80" r="12" fill="#c94f68" stroke="#f0e4c8" stroke-width="3"/>
-  <text x="80" y="85" text-anchor="middle" fill="#f0e4c8" font-family="system-ui,sans-serif" font-size="14" font-weight="900">OTRA</text>
+  <path d="m76 69 12 9-8 4 4 10-13-11 8-4Z" fill="#f0e4c8"/>
 </svg>

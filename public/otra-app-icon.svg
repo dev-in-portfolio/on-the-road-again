@@ -1,9 +1,9 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
   <rect width="512" height="512" rx="104" fill="#0b101b"/>
   <circle cx="256" cy="248" r="185" fill="#17243a" stroke="#f0e4c8" stroke-width="20"/>
   <circle cx="256" cy="248" r="147" fill="none" stroke="#e8b84a" stroke-width="13"/>
   <path d="m256 87 35 116 121 45-121 45-35 116-36-116-120-45 120-45Z" fill="#e8b84a"/>
   <path d="m256 137 23 88 88 23-88 23-23 88-23-88-88-23 88-23Z" fill="#17243a"/>
   <circle cx="256" cy="248" r="67" fill="#c94f68" stroke="#f0e4c8" stroke-width="14"/>
-  <text x="256" y="270" text-anchor="middle" fill="#f0e4c8" font-family="system-ui,sans-serif" font-size="58" font-weight="900">OTRA</text>
+  <path d="m239 189 76 54-47 27 25 67-82-71 50-27Z" fill="#f0e4c8"/>
 </svg>
