@@ -140,6 +140,10 @@ body {
   display: flex; gap: 0.5rem;
 }
 .panel-actions-row .btn { flex: 1; }
+.backstage-tools { border: 1px dashed rgba(211, 199, 169, .35); border-radius: 4px; padding: .1rem .65rem .65rem; }
+.backstage-tools summary { cursor: pointer; color: var(--text-secondary); font-family: var(--font-mono); font-size: .69rem; letter-spacing: .06em; padding: .65rem 0 .45rem; text-transform: uppercase; }
+.backstage-tools summary span { color: var(--text-muted); font-size: .62rem; letter-spacing: .02em; text-transform: none; }
+.backstage-tools:not([open]) { padding-bottom: .1rem; }
 
 /* ─── Shared Components ──────────────────────────────── */
 .card {
