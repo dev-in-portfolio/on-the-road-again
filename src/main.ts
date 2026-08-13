@@ -5,8 +5,15 @@ import {
   geocodeAutocomplete, geocodeSearch, getAccessSession, signIn,
 } from './api/client';
 import { Prospect, AutocompleteSuggestion, CreateProspectInput } from './types/prospect';
-import { buildGoogleMapsDirectionsUrl } from './google-maps';
-import { addRouteStop, moveRouteStop, removeRouteStop, resolveRoute } from './route-state';
+import { buildRouteGoogleMapsUrl } from './google-maps';
+import {
+  addRouteStop, moveRouteStop, removeRouteStop, resolveRoute, routeEntries,
+  MAX_ROUTE, loadRouteIds, saveRouteIds,
+} from './route-state';
+import { filterProspects, sortProspects, ListFilter, ListSort } from './prospect-list';
+import { upsertProspect, removeProspectById, prependProspect } from './prospect-actions';
+import { parseImportText, ImportRow } from './import-parser';
+import { RequestSequencer } from './search-coordination';
 
 // ─── Constants ─────────────────────────────────────────
 const DEFAULT_CENTER: [number, number] = [-95.7129, 37.0902];
@@ -30,9 +37,7 @@ let selectedProspectId: string | null = null;
 let searchQuery = '';
 let searchAbort: AbortController | null = null;
 let searchTimer: ReturnType<typeof setTimeout> | null = null;
-let searchRequestSequence = 0;
-type ListFilter = 'all' | 'not-dropped' | 'dropped' | 'route';
-type ListSort = 'nearby' | 'name';
+const searchSequencer = new RequestSequencer();
 let listFilter: ListFilter = 'all';
 let listSort: ListSort = 'nearby';
 
@@ -52,46 +57,11 @@ let edAcSug: AutocompleteSuggestion[] = [], edAcVis = false;
 let edAcAbort: AbortController | null = null, edAcTimer: ReturnType<typeof setTimeout> | null = null;
 
 // ─── Import State ──────────────────────────────────────
-type ImportRow = { name: string; address: string; status: 'pending' | 'geocoding' | 'ready' | 'duplicate' | 'needs_review' | 'error' | 'imported'; normalized?: string; lat?: number; lon?: number; placeId?: string; errorMsg?: string; duplicates?: Prospect[]; };
 let importRows: ImportRow[] = [];
 let importPhase: 'paste' | 'preview' | 'geocoding' | 'results' = 'paste';
 let importText = '';
 let importRunning = false;
 const IMPORT_CONCURRENCY = 3;
-
-function parseImportText(text: string): ImportRow[] {
-  const lines = text.split(/\r?\n/).filter(l => l.trim());
-  const rows: ImportRow[] = [];
-  let headerSkipped = false;
-  for (const line of lines) {
-    // Try common delimiters: | , tab
-    let parts: string[] | null = null;
-    if (line.includes('|')) parts = line.split('|');
-    else if (line.includes('\t')) parts = line.split('\t');
-    else if (line.includes(',')) {
-      // Only use comma if | and tab not found, and there are exactly 2+ parts
-      const csvParts = line.split(',');
-      if (csvParts.length >= 2) parts = csvParts;
-    }
-    if (!parts || parts.length < 2) continue;
-
-    const name = parts[0].trim();
-    const address = parts.slice(1).join(' ').trim().replace(/\s+/g, ' ');
-    if (!name || !address) continue;
-
-    // Skip header row
-    if (!headerSkipped && rows.length === 0 &&
-        /^(restaurant|business|name|商户|店名)/i.test(name) &&
-        /^(address|addr|地址|street)/i.test(address)) {
-      headerSkipped = true;
-      continue;
-    }
-    headerSkipped = true;
-
-    rows.push({ name, address, status: 'pending' });
-  }
-  return rows;
-}
 
 async function runImportGeocodeBatch() {
   importRunning = true; importPhase = 'geocoding';
@@ -146,7 +116,8 @@ async function saveImportRows() {
         duped++;
       } else {
         row.status = 'imported';
-        prospects.unshift(result as Prospect);
+        prospects = prependProspect(prospects, result as Prospect);
+        activeProspects = prependProspect(activeProspects, result as Prospect);
         saved++;
       }
     } catch (e: unknown) {
@@ -164,15 +135,12 @@ function resetImport() {
 }
 
 // ─── Route State ───────────────────────────────────────
-const ROUTE_KEY = 'otra.currentRoute';
-const MAX_ROUTE = 9;
 let routeIds: string[] = [];
 
 function loadRoute(): string[] {
-  try { const raw = localStorage.getItem(ROUTE_KEY); return raw ? JSON.parse(raw) as string[] : []; }
-  catch { return []; }
+  return loadRouteIds(localStorage);
 }
-function saveRoute() { try { localStorage.setItem(ROUTE_KEY, JSON.stringify(routeIds)); } catch { /* storage unavailable */ } }
+function saveRoute() { saveRouteIds(localStorage, routeIds); }
 function getRouteIndex(id: string): number { return routeIds.indexOf(id); }
 function isInRoute(id: string): boolean { return routeIds.indexOf(id) >= 0; }
 function getRouteResolution() { return resolveRoute(routeIds, activeProspects); }
@@ -210,22 +178,7 @@ function clearRoute() {
 // ─── Google Maps Handoff ───────────────────────────────
 
 function buildGoogleMapsUrl(origin: [number, number] | null): string | { error: string } {
-  const { items, missingIds } = getRouteResolution();
-  if (items.length === 0) return { error: 'Select at least one restaurant first.' };
-  if (missingIds.length) return { error: 'One or more route stops are unavailable. Remove them from Current Route before sending.' };
-
-  const invalid = items.filter(p => p.latitude == null || p.longitude == null);
-  if (invalid.length > 0) {
-    return { error: `${invalid[0].restaurant_name} needs a valid mapped address before this route can be sent.` };
-  }
-
-  const url = buildGoogleMapsDirectionsUrl(items.map(p => ({
-    latitude: p.latitude!,
-    longitude: p.longitude!,
-  })), origin);
-
-  if (url.length > 2000) return { error: 'Route URL is too long. This is unexpected with coordinate-based stops.' };
-  return url;
+  return buildRouteGoogleMapsUrl(getRouteResolution(), origin);
 }
 
 function handleSendToGoogleMaps() {
@@ -250,6 +203,7 @@ let maplibreglModule: typeof maplibregl | null = null;
 let mapLoading = false;
 let markers: Map<string, maplibregl.Marker> = new Map();
 let mapPopup: maplibregl.Popup | null = null;
+let selectedMarkerId: string | null = null;
 let currentLocation: [number, number] | null = null;
 let currentLocationMarker: maplibregl.Marker | null = null;
 let mapReady = false;
@@ -341,13 +295,18 @@ function fitMap() {
 
 function markerHTML(p: Prospect): string {
   const ri = getRouteIndex(p.id);
-  const numBadge = ri >= 0 ? `<text x="15" y="19" text-anchor="middle" fill="#1a0a2e" font-size="13" font-weight="bold">${ri + 1}</text>` : '';
-  if (p.dropped_off) {
-    // Rose — Bertha skull & roses
-    return `<svg width="30" height="40" viewBox="0 0 30 40"><path d="M15 1C7.3 1 1 7.3 1 15c0 10 14 24 14 24s14-14 14-24C29 7.3 22.7 1 15 1z" fill="#c44d6e" stroke="#9b3a56" stroke-width="1.5"/>${numBadge || '<text x="15" y="19" text-anchor="middle" fill="white" font-size="14" font-weight="bold">🌹</text>'}</svg>`;
-  }
-  // Active: amber/burnt orange; Route: gold
-  return `<svg width="30" height="40" viewBox="0 0 30 40"><path d="M15 1C7.3 1 1 7.3 1 15c0 10 14 24 14 24s14-14 14-24C29 7.3 22.7 1 15 1z" fill="${ri >= 0 ? '#f5c842' : '#d4740e'}" stroke="${ri >= 0 ? '#b8970a' : '#9a5208'}" stroke-width="1.5"/>${numBadge || '<circle cx="15" cy="13" r="5" fill="white" opacity="0.9"/>'}</svg>`;
+  const routed = ri >= 0;
+  const fill = routed ? '#e8b84a' : p.dropped_off ? '#c94f68' : '#17243a';
+  const ring = routed ? '#101827' : p.dropped_off ? '#f0a0ae' : '#f0e4c8';
+  const center = routed
+    ? `<text x="18" y="23" text-anchor="middle" fill="#101827" font-family="system-ui,sans-serif" font-size="16" font-weight="900">${ri + 1}</text>`
+    : p.dropped_off
+      ? '<path d="M18 11c-3-4-8 0-5 4-5-1-6 5-2 7-2 5 5 7 7 2 2 5 9 3 7-2 4-2 3-8-2-7 3-4-2-8-5-4Z" fill="#f5e8cf"/><circle cx="18" cy="18" r="2.2" fill="#a52e47"/>'
+      : '<path d="M18 10 21 16 28 17 23 22 24 29 18 26 12 29 13 22 8 17 15 16Z" fill="#e8b84a"/>';
+  const droppedFlag = routed && p.dropped_off
+    ? '<circle cx="29" cy="9" r="6" fill="#c94f68" stroke="#f5e8cf" stroke-width="2"/><path d="m26 9 2 2 4-5" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>'
+    : '';
+  return `<svg class="marker-glyph" width="36" height="46" viewBox="0 0 36 46" aria-hidden="true"><path d="M18 1.5C8.9 1.5 2 8.2 2 17.1c0 11.4 16 27.4 16 27.4s16-16 16-27.4C34 8.2 27.1 1.5 18 1.5Z" fill="#0a101c" stroke="#fff4d8" stroke-width="2.5"/><circle cx="18" cy="18" r="12.2" fill="${fill}" stroke="${ring}" stroke-width="2"/><path d="M9 18h18" stroke="${routed ? '#101827' : '#ffffff'}" stroke-opacity=".2" stroke-width="1"/>${center}${droppedFlag}</svg>`;
 }
 
 function markerAria(p: Prospect): string {
@@ -366,20 +325,21 @@ function refreshMarkers() {
     if (p.latitude == null || p.longitude == null) continue;
     const ex = markers.get(p.id);
     const rCls = getRouteIndex(p.id) >= 0 ? ' marker-routed' : '';
+    const sCls = selectedMarkerId === p.id ? ' marker-selected' : '';
     if (ex) {
       const el = ex.getElement();
-      el.className = `map-marker ${p.dropped_off ? 'marker-dropped' : 'marker-active'}${rCls}`;
+      el.className = `map-marker ${p.dropped_off ? 'marker-dropped' : 'marker-active'}${rCls}${sCls}`;
       el.setAttribute('aria-label', markerAria(p));
       el.innerHTML = markerHTML(p);
       ex.setLngLat([p.longitude, p.latitude]);
     } else {
       const el = document.createElement('div');
-      el.className = `map-marker ${p.dropped_off ? 'marker-dropped' : 'marker-active'}${rCls}`;
+      el.className = `map-marker ${p.dropped_off ? 'marker-dropped' : 'marker-active'}${rCls}${sCls}`;
       el.setAttribute('aria-label', markerAria(p));
       el.innerHTML = markerHTML(p);
       // Inline placement keeps marker geometry correct even when a restored PWA
       // shell has not yet applied the external MapLibre stylesheet.
-      el.style.cssText = 'position:absolute;top:0;left:0;width:30px;height:40px;cursor:pointer';
+      el.style.cssText = 'position:absolute;top:0;left:0;width:36px;height:46px;cursor:pointer';
       const mk = new maplibreglModule!.Marker({ element: el, anchor: 'bottom' }).setLngLat([p.longitude, p.latitude]).addTo(map!);
       // MapLibre's drag surface can suppress a plain click after a pointer/touch
       // interaction. Handle the release directly so pins work consistently on
@@ -407,6 +367,8 @@ function refreshMarkers() {
 function openPopup(p: Prospect, mk: maplibregl.Marker) {
   if (!map) return;
   if (mapPopup) mapPopup.remove();
+  selectedMarkerId = p.id;
+  refreshMarkers();
   const a = p.address_normalized || p.address_input;
   const inRt = isInRoute(p.id);
   const ri = getRouteIndex(p.id);
@@ -421,7 +383,8 @@ function openPopup(p: Prospect, mk: maplibregl.Marker) {
     <div class="popup-actions" style="margin-top:4px;">
       <button class="popup-btn ${inRt ? 'popup-btn-danger' : 'popup-btn-route'}" data-act="pop-route" data-id="${p.id}">${inRt ? 'Remove from Route' : '+ Add to Route'}</button>
     </div></div>`;
-  mapPopup = new maplibreglModule!.Popup({ offset: [0, -32], closeButton: true, maxWidth: '280px' }).setLngLat(mk.getLngLat()).setHTML(html).addTo(map);
+  mapPopup = new maplibreglModule!.Popup({ offset: [0, -38], closeButton: true, maxWidth: '280px' }).setLngLat(mk.getLngLat()).setHTML(html).addTo(map);
+  mapPopup.once('close', () => { selectedMarkerId = null; refreshMarkers(); });
   // addTo() fires the popup's open event synchronously, so bind directly to
   // the created popup element rather than subscribing after that event.
   const popupElement = mapPopup.getElement();
@@ -450,7 +413,17 @@ function toggleRouteSelection(id: string) {
 }
 
 async function mapToggleDropped(id: string, cur: boolean) {
-  try { const u = await toggleDroppedOff(id, cur); prospects = prospects.map(p => p.id === id ? u : p); refreshMarkers(); if (panelView === 'panel-detail' && selectedProspectId === id) renderPanel(); } catch (e: unknown) { errorMessage = e instanceof Error ? e.message : 'Failed'; renderPanel(); }
+  try {
+    const u = await toggleDroppedOff(id, cur);
+    prospects = upsertProspect(prospects, u);
+    activeProspects = upsertProspect(activeProspects, u);
+    refreshMarkers();
+    // Re-render the open popup so its status and Drop/Undo label update in place.
+    const mk = markers.get(id);
+    if (mk) openPopup(u, mk);
+    if (panelView === 'panel-detail' && selectedProspectId === id) renderPanel();
+    if (!cur) playDropStamp(u.restaurant_name);
+  } catch (e: unknown) { errorMessage = e instanceof Error ? e.message : 'Failed'; renderPanel(); }
 }
 
 function flyTo(p: Prospect) {
@@ -540,25 +513,25 @@ function scheduleSearch(immediate = false) {
 
 // ─── Data ──────────────────────────────────────────────
 async function loadData() {
-  const requestSequence = ++searchRequestSequence;
+  const requestSequence = searchSequencer.next();
   searchAbort?.abort();
   const controller = new AbortController();
   searchAbort = controller;
   loading = true; errorMessage = null; renderPanel();
   try {
     const visible = await fetchProspects(searchQuery || undefined, false, controller.signal);
-    if (requestSequence !== searchRequestSequence) return;
+    if (!searchSequencer.isCurrent(requestSequence)) return;
     prospects = visible;
     // Search results are display-only. The unfiltered load hydrates the route's
     // canonical source of truth and is never replaced by a filtered result.
     if (!searchQuery) activeProspects = visible;
   }
   catch (e: unknown) {
-    if (requestSequence !== searchRequestSequence || (e instanceof DOMException && e.name === 'AbortError')) return;
+    if (!searchSequencer.isCurrent(requestSequence) || (e instanceof DOMException && e.name === 'AbortError')) return;
     errorMessage = e instanceof Error ? e.message : 'Failed to load.';
   }
   finally {
-    if (requestSequence !== searchRequestSequence) return;
+    if (!searchSequencer.isCurrent(requestSequence)) return;
     loading = false;
     void createMap();
     refreshMarkers();
@@ -585,7 +558,7 @@ async function showArchived() {
 }
 
 // ─── Autocomplete ──────────────────────────────────────
-let acSeq = 0; // monotonically increasing sequence to reject stale responses
+const acSequencer = new RequestSequencer(); // monotonically increasing sequence to reject stale responses
 
 function triggerAc(
   text: string,
@@ -602,7 +575,7 @@ function triggerAc(
 
   if (text.trim().length < 2) { setSug([]); setVis(false); return; }
 
-  const seq = ++acSeq; // capture current sequence number
+  const seq = acSequencer.next(); // capture current sequence number
   const query = text.trim();
 
   const t = setTimeout(async () => {
@@ -610,11 +583,11 @@ function triggerAc(
     try {
       const r = await geocodeAutocomplete(query, ctrl.signal);
       // Only accept result if no newer input has arrived (ISSUE 4 guard)
-      if (seq !== acSeq) return;
+      if (!acSequencer.isCurrent(seq)) return;
       setSug(r); setVis(r.length > 0);
     } catch {
       // Silently ignore aborted/failed — only if still current
-      if (seq !== acSeq) return;
+      if (!acSequencer.isCurrent(seq)) return;
       setSug([]); setVis(false);
     }
     rebuild();
@@ -663,14 +636,14 @@ async function confirmAdd() {
   try {
     const r = await createProspect(inp);
     if ('code' in r && r.code === 'DUPLICATE_DETECTED') { addDuplicates = r.duplicates; addStep = 'duplicate'; submitting = false; renderPanel(); return; }
-    const created = r as Prospect; prospects.unshift(created); activeProspects.unshift(created); resetAdd(); panelView = 'panel-list'; refreshMarkers(); submitting = false; renderPanel();
+    const created = r as Prospect; prospects = prependProspect(prospects, created); activeProspects = prependProspect(activeProspects, created); resetAdd(); panelView = 'panel-list'; refreshMarkers(); submitting = false; renderPanel();
   } catch (er: unknown) { errorMessage = er instanceof Error ? er.message : "Couldn't save."; submitting = false; renderPanel(); }
 }
 
 async function confirmAddDup() {
   submitting = true; renderPanel();
   const inp: CreateProspectInput = { restaurant_name: addName, address_input: addAddress, address_normalized: addNormalized || null, latitude: addLat, longitude: addLon, geocode_provider: addLat !== null ? 'Geoapify' : null, geocode_reference: addPlaceId || null, skip_duplicate_check: true };
-  try { const created = await createProspect(inp) as Prospect; prospects.unshift(created); activeProspects.unshift(created); resetAdd(); panelView = 'panel-list'; refreshMarkers(); submitting = false; renderPanel(); }
+  try { const created = await createProspect(inp) as Prospect; prospects = prependProspect(prospects, created); activeProspects = prependProspect(activeProspects, created); resetAdd(); panelView = 'panel-list'; refreshMarkers(); submitting = false; renderPanel(); }
   catch (er: unknown) { errorMessage = er instanceof Error ? er.message : "Couldn't save."; submitting = false; renderPanel(); }
 }
 
@@ -708,27 +681,39 @@ async function confirmEdit() {
   try {
     const r = await updateProspect({ id: selectedProspectId, restaurant_name: edName, address_input: edAddr, address_normalized: edNorm || null, latitude: edLat, longitude: edLon, geocode_provider: edLat !== null ? 'Geoapify' : null, geocode_reference: edPid || null });
     if ('code' in r && r.code === 'DUPLICATE_DETECTED') { edDups = r.duplicates; edStep = 'duplicate'; submitting = false; renderPanel(); return; }
-    const u = r as Prospect; prospects = prospects.map(p => p.id === u.id ? u : p); activeProspects = activeProspects.map(p => p.id === u.id ? u : p); selectedProspectId = u.id; panelView = 'panel-detail'; refreshMarkers(); submitting = false; renderPanel();
+    const u = r as Prospect; prospects = upsertProspect(prospects, u); activeProspects = upsertProspect(activeProspects, u); selectedProspectId = u.id; panelView = 'panel-detail'; refreshMarkers(); submitting = false; renderPanel();
   } catch (er: unknown) { errorMessage = er instanceof Error ? er.message : 'Failed to update.'; submitting = false; renderPanel(); }
 }
 
 async function confirmEditDup() {
   if (!selectedProspectId) return; submitting = true; renderPanel();
-  try { const r = await updateProspect({ id: selectedProspectId, restaurant_name: edName, address_input: edAddr, address_normalized: edNorm || null, latitude: edLat, longitude: edLon, geocode_provider: edLat !== null ? 'Geoapify' : null, geocode_reference: edPid || null, skip_duplicate_check: true }); const u = r as Prospect; prospects = prospects.map(p => p.id === u.id ? u : p); activeProspects = activeProspects.map(p => p.id === u.id ? u : p); selectedProspectId = u.id; panelView = 'panel-detail'; refreshMarkers(); submitting = false; renderPanel(); }
+  try { const r = await updateProspect({ id: selectedProspectId, restaurant_name: edName, address_input: edAddr, address_normalized: edNorm || null, latitude: edLat, longitude: edLon, geocode_provider: edLat !== null ? 'Geoapify' : null, geocode_reference: edPid || null, skip_duplicate_check: true }); const u = r as Prospect; prospects = upsertProspect(prospects, u); activeProspects = upsertProspect(activeProspects, u); selectedProspectId = u.id; panelView = 'panel-detail'; refreshMarkers(); submitting = false; renderPanel(); }
   catch (er: unknown) { errorMessage = er instanceof Error ? er.message : 'Failed to update.'; submitting = false; renderPanel(); }
 }
 
 // ─── Actions ───────────────────────────────────────────
 async function handleToggleDropped(id: string, cur: boolean) {
-  try { const u = await toggleDroppedOff(id, cur); prospects = prospects.map(p => p.id === id ? u : p); activeProspects = activeProspects.map(p => p.id === id ? u : p); refreshMarkers(); if ((panelView === 'panel-detail' && selectedProspectId === id) || panelView === 'panel-list' || panelView === 'panel-route') renderPanel(); }
+  try { const u = await toggleDroppedOff(id, cur); prospects = upsertProspect(prospects, u); activeProspects = upsertProspect(activeProspects, u); refreshMarkers(); if ((panelView === 'panel-detail' && selectedProspectId === id) || panelView === 'panel-list' || panelView === 'panel-route') renderPanel(); if (!cur) playDropStamp(u.restaurant_name); }
   catch (e: unknown) { errorMessage = e instanceof Error ? e.message : 'Failed.'; renderPanel(); }
+}
+
+function playDropStamp(name: string) {
+  document.querySelector('.drop-stamp')?.remove();
+  const stamp = document.createElement('div');
+  stamp.className = 'drop-stamp';
+  stamp.setAttribute('role', 'status');
+  stamp.setAttribute('aria-label', `${name} marked Dropped Off`);
+  stamp.innerHTML = `<img src="/otra-rose-stamp.svg" alt=""><span>DROPPED OFF</span>`;
+  document.body.append(stamp);
+  stamp.addEventListener('animationend', () => stamp.remove(), { once: true });
+  window.setTimeout(() => stamp.remove(), 700);
 }
 
 async function handleArchive(id: string) {
   try {
     const archived = await archiveProspect(id);
     archivedProspects = [archived, ...archivedProspects.filter(p => p.id !== id)];
-    prospects = prospects.filter(p => p.id !== id); activeProspects = activeProspects.filter(p => p.id !== id); refreshMarkers();
+    prospects = removeProspectById(prospects, id); activeProspects = removeProspectById(activeProspects, id); refreshMarkers();
     if (selectedProspectId === id) { selectedProspectId = null; panelView = 'panel-list'; }
     renderPanel();
   }
@@ -739,7 +724,7 @@ async function handleRestore(id: string) {
   try {
     const u = await restoreProspect(id);
     archivedProspects = archivedProspects.filter(p => p.id !== id);
-    prospects.unshift(u); activeProspects.unshift(u); refreshMarkers();
+    prospects = prependProspect(prospects, u); activeProspects = prependProspect(activeProspects, u); refreshMarkers();
     if (selectedProspectId === id) { selectedProspectId = id; panelView = 'panel-detail'; }
     renderPanel();
   }
@@ -748,7 +733,7 @@ async function handleRestore(id: string) {
 
 async function handleDelete(id: string) {
   if (!confirm('Permanently delete?')) return;
-  try { await deleteProspect(id); removeFromRoute(id); prospects = prospects.filter(p => p.id !== id); activeProspects = activeProspects.filter(p => p.id !== id); refreshMarkers(); if (selectedProspectId === id) { selectedProspectId = null; panelView = 'panel-list'; } renderPanel(); }
+  try { await deleteProspect(id); removeFromRoute(id); prospects = removeProspectById(prospects, id); activeProspects = removeProspectById(activeProspects, id); refreshMarkers(); if (selectedProspectId === id) { selectedProspectId = null; panelView = 'panel-list'; } renderPanel(); }
   catch (e: unknown) { errorMessage = e instanceof Error ? e.message : 'Failed.'; renderPanel(); }
 }
 
@@ -761,24 +746,36 @@ function renderPanel() {
   updateRouteControl();
 }
 
+function unavailableRouteRow(id: string, index: number): string {
+  return `<div class="route-item route-work-item">
+    <span class="route-num">${index + 1}.</span>
+    <div class="route-info"><div class="route-name">Unavailable prospect</div><div class="route-addr">This stop is archived/deleted/unavailable.</div></div>
+    <div class="route-ctrls"><button class="btn btn-small btn-danger route-rm" data-id="${esc(id)}" aria-label="Remove unavailable stop from route">Remove from Route</button></div>
+  </div>`;
+}
+
 function rRoute(p: HTMLElement) {
-  const { items, missingIds } = getRouteResolution();
+  const entries = routeEntries(routeIds, activeProspects);
+  const count = routeIds.length;
+  const routeComplete = count > 0 && entries.every(entry => entry.kind === 'resolved' && entry.prospect.dropped_off);
   p.innerHTML = `<div class="panel-header"><button class="btn btn-back" id="btn-route-back">← Map</button><h1 class="app-title" style="font-size:1.15rem;">Current Route</h1></div>
     ${errorMessage ? `<div class="error-banner">${esc(errorMessage)}</div>` : ''}
     <div class="card route-tray">
-      <div class="card-title"><span>Leave-Behind Route</span><span class="badge badge-pending">${routeIds.length} / ${MAX_ROUTE}</span></div>
-      ${items.length ? `<div class="route-list">${items.map((item, index) => `<div class="route-item route-work-item">
-        <span class="route-num">${index + 1}.</span>
-        <div class="route-info"><div class="route-name">${esc(item.restaurant_name)}</div><div class="route-addr">${esc(item.address_normalized || item.address_input)}</div>${item.dropped_off ? '<span class="badge badge-dropped">🌹 Dropped Off</span>' : ''}</div>
-        <div class="route-ctrls">
-          <button class="btn btn-small btn-secondary route-up" data-idx="${index}" ${index === 0 ? 'disabled' : ''} aria-label="Move ${esc(item.restaurant_name)} up">↑</button>
-          <button class="btn btn-small btn-secondary route-dn" data-idx="${index}" ${index === items.length - 1 ? 'disabled' : ''} aria-label="Move ${esc(item.restaurant_name)} down">↓</button>
-          <button class="btn btn-small btn-status ${item.dropped_off ? 'dropped' : 'pending'} route-drop" data-id="${item.id}" data-dr="${item.dropped_off}">${item.dropped_off ? 'Undo' : 'Drop'}</button>
-          <button class="btn btn-small btn-danger route-rm" data-id="${item.id}" aria-label="Remove ${esc(item.restaurant_name)} from route">✕</button>
-        </div>
-      </div>`).join('')}</div>` : '<div class="empty-state"><span class="empty-text">No stops yet. Tap map pins to build your route.</span></div>'}
-      ${missingIds.length ? `<div class="warning-banner">${missingIds.length} unavailable route stop${missingIds.length === 1 ? '' : 's'} retained. Remove it only if you no longer need it.</div>` : ''}
-      ${items.length ? `<button class="btn btn-primary btn-full btn-send-gmaps" id="btn-send-gmaps">Open ${items.length} Stop${items.length === 1 ? '' : 's'} in Google Maps</button><button class="btn btn-secondary btn-full" id="btn-clear-route">Clear Route</button>` : ''}
+      <div class="card-title"><span>Leave-Behind Route</span><span class="badge ${routeComplete ? 'badge-dropped' : 'badge-pending'}">${count === MAX_ROUTE ? 'FULL SET · ' : ''}${count} / ${MAX_ROUTE}</span></div>
+      ${routeComplete ? '<div class="route-complete" role="status"><img src="/otra-show-over.svg" alt=""><div><strong>SHOW OVER</strong><span>Run complete. Route remains available.</span></div></div>' : ''}
+      ${count ? `<div class="route-list">${entries.map((entry, index) => entry.kind === 'missing'
+        ? unavailableRouteRow(entry.id, index)
+        : `<div class="route-item route-work-item">
+            <span class="route-num">${index + 1}.</span>
+            <div class="route-info"><div class="route-name">${esc(entry.prospect.restaurant_name)}</div><div class="route-addr">${esc(entry.prospect.address_normalized || entry.prospect.address_input)}</div>${entry.prospect.dropped_off ? '<span class="badge badge-dropped">🌹 Dropped Off</span>' : ''}</div>
+            <div class="route-ctrls">
+              <button class="btn btn-small btn-secondary route-up" data-idx="${index}" ${index === 0 ? 'disabled' : ''} aria-label="Move ${esc(entry.prospect.restaurant_name)} up">↑</button>
+              <button class="btn btn-small btn-secondary route-dn" data-idx="${index}" ${index === count - 1 ? 'disabled' : ''} aria-label="Move ${esc(entry.prospect.restaurant_name)} down">↓</button>
+              <button class="btn btn-small btn-status ${entry.prospect.dropped_off ? 'dropped' : 'pending'} route-drop" data-id="${entry.prospect.id}" data-dr="${entry.prospect.dropped_off}">${entry.prospect.dropped_off ? 'Undo' : 'Drop'}</button>
+              <button class="btn btn-small btn-danger route-rm" data-id="${entry.prospect.id}" aria-label="Remove ${esc(entry.prospect.restaurant_name)} from route">✕</button>
+            </div>
+          </div>`).join('')}</div>` : '<div class="empty-state empty-route"><img src="/otra-empty-route.svg" alt=""><strong>Nothing shaking on Shakedown yet.</strong><span class="empty-text">Add stops from the map.</span></div>'}
+      ${count ? `<button class="btn btn-primary btn-full btn-send-gmaps" id="btn-send-gmaps">Open ${count} Stop${count === 1 ? '' : 's'} in Google Maps</button><button class="btn btn-secondary btn-full" id="btn-clear-route">Clear Route</button>` : ''}
     </div>`;
   document.getElementById('btn-route-back')?.addEventListener('click', () => { panelView = 'panel-list'; renderPanel(); });
   document.getElementById('btn-clear-route')?.addEventListener('click', () => { clearRoute(); panelView = 'panel-route'; renderPanel(); });
@@ -791,28 +788,30 @@ function rRoute(p: HTMLElement) {
 
 function rList(p: HTMLElement) {
   const nc = prospects.filter(x => x.latitude == null || x.longitude == null).length;
-  const { items: routeItems, missingIds } = getRouteResolution();
+  const routeEntriesList = routeEntries(routeIds, activeProspects);
+  const routeCount = routeIds.length;
   const listProspects = getListProspects();
   p.innerHTML = `<div class="panel-header"><h1 class="app-title">ON THE ROAD AGAIN</h1><p class="app-subtitle">${prospects.length} prospect${prospects.length !== 1 ? 's' : ''}</p></div>
     ${errorMessage ? `<div class="error-banner">${esc(errorMessage)}</div>` : ''}
     ${nc > 0 && !loading ? `<div class="info-banner">${nc} prospect${nc !== 1 ? 's' : ''} need${nc === 1 ? 's' : ''} an address update for the map.</div>` : ''}
     <details class="backstage-tools"><summary>Backstage tools <span>database &amp; import</span></summary><div class="panel-actions-row"><button class="btn btn-primary" id="btn-pl-add">+ Add Prospect</button><button class="btn btn-secondary" id="btn-pl-arch">📦 Archived</button><button class="btn btn-secondary" id="btn-pl-import">📋 Import</button></div></details>
     <div class="list-tools" aria-label="Prospect list options"><label class="sr-only" for="list-filter">Filter prospects</label><select class="form-input list-select" id="list-filter"><option value="all" ${listFilter === 'all' ? 'selected' : ''}>All prospects</option><option value="not-dropped" ${listFilter === 'not-dropped' ? 'selected' : ''}>Not dropped off</option><option value="dropped" ${listFilter === 'dropped' ? 'selected' : ''}>Dropped off</option><option value="route" ${listFilter === 'route' ? 'selected' : ''}>In Current Route</option></select><label class="sr-only" for="list-sort">Sort prospects</label><select class="form-input list-select" id="list-sort"><option value="nearby" ${listSort === 'nearby' ? 'selected' : ''}>${currentLocation ? 'Nearest first' : 'A–Z (locate me for nearby)'}</option><option value="name" ${listSort === 'name' ? 'selected' : ''}>A–Z</option></select></div>
-    ${routeItems.length > 0 ? `<div class="card route-tray">
-      <div class="card-title"><span>⚡ Current Route</span><span class="badge badge-pending">${routeItems.length} / ${MAX_ROUTE}</span></div>
+    ${routeCount ? `<div class="card route-tray">
+      <div class="card-title"><span>⚡ Current Route</span><span class="badge badge-pending">${routeCount} / ${MAX_ROUTE}</span></div>
       <div class="route-hint">Choose up to 9 restaurants. Your current location is the route start.</div>
-      <div class="route-list">${routeItems.map((x, i) => `<div class="route-item">
-        <span class="route-num">${i + 1}.</span>
-        <div class="route-info"><div class="route-name">${esc(x.restaurant_name)}</div><div class="route-addr">${esc(x.address_normalized || x.address_input)}</div></div>
-        <div class="route-ctrls">
-          <button class="btn btn-small btn-secondary route-up" data-idx="${i}" ${i === 0 ? 'disabled' : ''} aria-label="Move ${esc(x.restaurant_name)} up">↑</button>
-          <button class="btn btn-small btn-secondary route-dn" data-idx="${i}" ${i === routeItems.length - 1 ? 'disabled' : ''} aria-label="Move ${esc(x.restaurant_name)} down">↓</button>
-          <button class="btn btn-small btn-danger route-rm" data-id="${x.id}" aria-label="Remove ${esc(x.restaurant_name)} from route">✕</button>
-        </div>
-      </div>`).join('')}</div>
-      ${missingIds.length ? `<div class="warning-banner">${missingIds.length} unavailable route stop${missingIds.length === 1 ? '' : 's'} retained. Remove it only if you no longer need it.</div>` : ''}
+      <div class="route-list">${routeEntriesList.map((entry, index) => entry.kind === 'missing'
+        ? unavailableRouteRow(entry.id, index)
+        : `<div class="route-item">
+            <span class="route-num">${index + 1}.</span>
+            <div class="route-info"><div class="route-name">${esc(entry.prospect.restaurant_name)}</div><div class="route-addr">${esc(entry.prospect.address_normalized || entry.prospect.address_input)}</div></div>
+            <div class="route-ctrls">
+              <button class="btn btn-small btn-secondary route-up" data-idx="${index}" ${index === 0 ? 'disabled' : ''} aria-label="Move ${esc(entry.prospect.restaurant_name)} up">↑</button>
+              <button class="btn btn-small btn-secondary route-dn" data-idx="${index}" ${index === routeCount - 1 ? 'disabled' : ''} aria-label="Move ${esc(entry.prospect.restaurant_name)} down">↓</button>
+              <button class="btn btn-small btn-danger route-rm" data-id="${entry.prospect.id}" aria-label="Remove ${esc(entry.prospect.restaurant_name)} from route">✕</button>
+            </div>
+          </div>`).join('')}</div>
       <button class="btn btn-secondary btn-full" id="btn-clear-route">Clear Route</button>
-      <button class="btn btn-primary btn-full btn-send-gmaps" id="btn-send-gmaps">🗺️ Send ${routeItems.length} Stop${routeItems.length !== 1 ? 's' : ''} to Google Maps</button>
+      <button class="btn btn-primary btn-full btn-send-gmaps" id="btn-send-gmaps">🗺️ Send ${routeCount} Stop${routeCount !== 1 ? 's' : ''} to Google Maps</button>
     </div>` : ''}
     <div class="prospect-list">${loading ? '<div class="empty-state"><span class="empty-icon">⚡</span><span class="empty-text">One way or another, this darkness has got to give...</span></div>' : !listProspects.length ? `<div class="empty-state"><span class="empty-text">${searchQuery ? 'No matches with those list options.' : 'Nothing matches those list options yet.'}</span></div>` : listProspects.map(x => `<div class="prospect-item" data-id="${x.id}"><div class="prospect-info"><div class="prospect-name">${isInRoute(x.id) ? '<span class="route-badge-sm">⚡</span> ' : ''}${esc(x.restaurant_name)}</div><div class="prospect-address">${esc(x.address_normalized || x.address_input)}</div></div><div class="prospect-actions-row">${x.dropped_off ? '<span class="badge badge-dropped">🌹 Dropped</span>' : ''}<button class="btn btn-small btn-secondary pl-view" data-id="${x.id}">View</button><button class="btn btn-small btn-status ${x.dropped_off ? 'dropped' : 'pending'} pl-toggle" data-id="${x.id}" data-dr="${x.dropped_off}">${x.dropped_off ? '🌹' : 'Drop'}</button></div></div>`).join('')}</div>`;
   document.getElementById('btn-pl-add')?.addEventListener('click', () => { resetAdd(); panelView = 'panel-add'; renderPanel(); });
@@ -832,30 +831,11 @@ function rList(p: HTMLElement) {
 }
 
 function getListProspects(): Prospect[] {
-  const filtered = prospects.filter(prospect => {
-    if (listFilter === 'not-dropped') return !prospect.dropped_off;
-    if (listFilter === 'dropped') return prospect.dropped_off;
-    if (listFilter === 'route') return isInRoute(prospect.id);
-    return true;
-  });
-  return [...filtered].sort((a, b) => {
-    if (listSort === 'nearby' && currentLocation) {
-      const distanceA = distanceFromCurrentLocation(a);
-      const distanceB = distanceFromCurrentLocation(b);
-      if (distanceA !== distanceB) return distanceA - distanceB;
-    }
-    return a.restaurant_name.localeCompare(b.restaurant_name);
-  });
-}
-
-function distanceFromCurrentLocation(prospect: Prospect): number {
-  if (!currentLocation || prospect.latitude == null || prospect.longitude == null) return Number.POSITIVE_INFINITY;
-  const [originLon, originLat] = currentLocation;
-  const latitudeRadians = Math.PI / 180;
-  const dLat = (prospect.latitude - originLat) * latitudeRadians;
-  const dLon = (prospect.longitude - originLon) * latitudeRadians;
-  const a = Math.sin(dLat / 2) ** 2 + Math.cos(originLat * latitudeRadians) * Math.cos(prospect.latitude * latitudeRadians) * Math.sin(dLon / 2) ** 2;
-  return 3958.8 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return sortProspects(
+    filterProspects(prospects, listFilter, routeIds),
+    listSort,
+    currentLocation,
+  );
 }
 
 function rAdd(p: HTMLElement) {
@@ -956,8 +936,8 @@ function rEditDup(p: HTMLElement) {
 function rArch(p: HTMLElement) {
   const ar = archivedProspects;
   p.innerHTML = `<div class="panel-header"><button class="btn btn-back" id="btn-bk-ar">← Back</button><h1 class="app-title" style="font-size:1.15rem;">Archived</h1></div>
-    <div class="card"><div class="card-title"><span>Archived</span><span class="badge badge-pending">${archivedLoading ? 'Loading...' : `${ar.length} archived`}</span></div>
-    ${archivedLoading ? '<div class="empty-state">Loading archived prospects...</div>' : !ar.length ? '<div class="empty-state">No archived prospects.</div>' : `<div class="prospect-list">${ar.map(x => `<div class="prospect-item" data-id="${x.id}"><div class="prospect-info"><div class="prospect-name">${esc(x.restaurant_name)}</div><div class="prospect-address">${esc(x.address_normalized || x.address_input)}</div></div><div class="prospect-actions-row"><button class="btn btn-small btn-primary ar-rest" data-id="${x.id}">Restore</button></div></div>`).join('')}</div>`}</div>`;
+    <div class="card archive-card"><div class="card-title"><span>Archive Vault</span><span class="badge badge-pending">${archivedLoading ? 'Loading...' : `${ar.length} archived`}</span></div>
+    ${archivedLoading ? '<div class="empty-state">Loading archived prospects...</div>' : !ar.length ? '<div class="empty-state"><span class="empty-text">The archive vault is empty.</span></div>' : `<div class="prospect-list">${ar.map(x => `<div class="prospect-item" data-id="${x.id}"><div class="prospect-info"><div class="prospect-name">${esc(x.restaurant_name)}</div><div class="prospect-address">${esc(x.address_normalized || x.address_input)}</div></div><div class="prospect-actions-row"><button class="btn btn-small btn-primary ar-rest" data-id="${x.id}">Restore</button></div></div>`).join('')}</div>`}</div>`;
   document.getElementById('btn-bk-ar')?.addEventListener('click', () => { panelView = 'panel-list'; renderPanel(); });
   p.querySelectorAll('.ar-rest').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); handleRestore(b.getAttribute('data-id')!); }));
 }
@@ -1067,7 +1047,7 @@ async function bootstrap() {
 
 function renderAccessGate(message = '') {
   const app = document.getElementById('app')!;
-  app.innerHTML = `<main class="access-gate"><section class="access-card"><p class="access-kicker">DARK STAR CONSULTING</p><h1>ON THE ROAD AGAIN</h1><p>This is a private field tool.</p>${message ? `<div class="error-banner">${esc(message)}</div>` : ''}<form id="access-form"><label class="form-label" for="access-code">Access code</label><input class="form-input" id="access-code" type="password" autocomplete="current-password" required autofocus><button class="btn btn-primary btn-full" type="submit">Open Field Tool</button></form></section></main>`;
+  app.innerHTML = `<main class="access-gate"><section class="access-card" aria-labelledby="access-title"><div class="credential-top"><img src="/otra-darkstar-compass.svg" alt=""><div><p class="access-kicker">DARK STAR CONSULTING</p><p class="access-dept">FIELD OPERATIONS</p></div></div><div class="credential-rule"></div><p class="access-pass">BACKSTAGE / FIELD ACCESS</p><h1 id="access-title">ON THE ROAD AGAIN</h1><p class="access-note">Private restaurant prospecting tool</p>${message ? `<div class="error-banner" role="alert">${esc(message)}</div>` : ''}<form id="access-form"><label class="form-label" for="access-code">Access code</label><input class="form-input" id="access-code" type="password" autocomplete="current-password" required autofocus><button class="btn btn-primary btn-full" type="submit">Open Field Tool</button></form><div class="credential-footer"><span>OTRA • ROAD CREW</span><span>AUTHORIZED FIELD USE</span></div></section></main>`;
   document.getElementById('access-form')?.addEventListener('submit', async event => {
     event.preventDefault();
     const input = document.getElementById('access-code') as HTMLInputElement;

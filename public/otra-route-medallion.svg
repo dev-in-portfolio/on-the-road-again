@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="t d">
+  <title id="t">On The Road Again route medallion</title>
+  <desc id="d">Original circular road and star route emblem for the OTRA field tool.</desc>
+  <defs>
+    <radialGradient id="sky" cx="50%" cy="38%" r="72%">
+      <stop offset="0" stop-color="#26385c"/>
+      <stop offset="1" stop-color="#111827"/>
+    </radialGradient>
+  </defs>
+  <circle cx="256" cy="256" r="238" fill="#efe2c3" stroke="#0f1728" stroke-width="28"/>
+  <circle cx="256" cy="256" r="198" fill="url(#sky)" stroke="#d7b35c" stroke-width="8"/>
+  <path d="M103 304c56-23 106-34 153-34 55 0 106 12 153 36" fill="none" stroke="#d4c49f" stroke-width="12" stroke-linecap="round" opacity=".8"/>
+  <path d="M196 428c15-62 36-117 60-166 24 49 44 104 60 166" fill="#e7d9b8" opacity=".96"/>
+  <path d="M247 422c5-72 8-125 9-160 1 35 5 88 10 160" fill="#182239"/>
+  <path d="M257 132l13 27 30 4-22 21 5 30-26-14-26 14 5-30-22-21 30-4z" fill="#e8b84a"/>
+  <path d="M177 160l54 51-25 24 61 37-31 26 82 56" fill="none" stroke="#77c7e8" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="177" cy="160" r="11" fill="#d75569"/>
+  <circle cx="318" cy="354" r="12" fill="#d75569"/>
+  <text x="256" y="92" text-anchor="middle" fill="#172034" font-family="Arial, sans-serif" font-weight="800" font-size="30" letter-spacing="5">OTRA</text>
+</svg>

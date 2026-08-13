@@ -1,3 +1,5 @@
+import type { RouteResolution } from './route-state';
+
 export type GoogleMapsStop = {
   latitude: number;
   longitude: number;
@@ -25,4 +27,38 @@ export function buildGoogleMapsDirectionsUrl(
   }
 
   return `https://www.google.com/maps/dir/?${params.toString()}`;
+}
+
+export type GoogleMapsRouteResult = string | { error: string };
+
+// Turn a resolved route (ordered items + any missing IDs) into a Google Maps
+// directions URL, failing safely when the route is empty, references missing
+// prospects, or contains a stop without a valid mapped coordinate.
+export function buildRouteGoogleMapsUrl(
+  resolution: RouteResolution,
+  origin: [number, number] | null,
+): GoogleMapsRouteResult {
+  const { items, missingIds } = resolution;
+  if (items.length === 0) return { error: 'Select at least one restaurant first.' };
+  if (missingIds.length) {
+    return { error: 'One or more route stops are unavailable. Remove them from Current Route before sending.' };
+  }
+
+  const invalid = items.filter(prospect => prospect.latitude == null || prospect.longitude == null);
+  if (invalid.length > 0) {
+    return { error: `${invalid[0].restaurant_name} needs a valid mapped address before this route can be sent.` };
+  }
+
+  const url = buildGoogleMapsDirectionsUrl(
+    items.map(prospect => ({
+      latitude: prospect.latitude!,
+      longitude: prospect.longitude!,
+    })),
+    origin,
+  );
+
+  if (url.length > 2000) {
+    return { error: 'Route URL is too long. This is unexpected with coordinate-based stops.' };
+  }
+  return url;
 }

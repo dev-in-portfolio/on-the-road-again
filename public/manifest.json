@@ -1,13 +1,13 @@
 {
   "name": "On The Road Again",
   "short_name": "OTRA",
-  "description": "Field sales restaurant prospecting tool",
+  "description": "Private mobile field tool for restaurant leave-behind routes",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
   "orientation": "portrait-primary",
-  "theme_color": "#120a24",
-  "background_color": "#120a24",
+  "theme_color": "#0b101b",
+  "background_color": "#0b101b",
   "icons": [
     {
       "src": "/icon-192.png",
@@ -20,10 +20,10 @@
       "type": "image/png"
     },
     {
-      "src": "/icon-512.svg",
+      "src": "/otra-app-icon.svg",
       "sizes": "512x512",
       "type": "image/svg+xml",
-      "purpose": "any"
+      "purpose": "any maskable"
     }
   ]
 }

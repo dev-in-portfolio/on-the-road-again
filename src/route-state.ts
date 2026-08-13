@@ -5,6 +5,9 @@ export type RouteResolution = {
   missingIds: string[];
 };
 
+export const MAX_ROUTE = 9;
+export const ROUTE_STORAGE_KEY = 'otra.currentRoute';
+
 export function addRouteStop(routeIds: string[], id: string, maxStops: number): string[] | null {
   if (routeIds.includes(id)) return routeIds;
   if (routeIds.length >= maxStops) return null;
@@ -35,4 +38,59 @@ export function resolveRoute(routeIds: string[], prospects: Prospect[]): RouteRe
     else missingIds.push(id);
   }
   return { items, missingIds };
+}
+
+// Ordered route entries that preserve each ID's position in `routeIds`, so the
+// UI can render resolved and missing stops interleaved with correct numbering.
+export type RouteEntry =
+  | { kind: 'resolved'; id: string; prospect: Prospect }
+  | { kind: 'missing'; id: string };
+
+export function routeEntries(routeIds: string[], prospects: Prospect[]): RouteEntry[] {
+  const byId = new Map(prospects.map(prospect => [prospect.id, prospect]));
+  return routeIds.map(id => {
+    const prospect = byId.get(id);
+    return prospect ? { kind: 'resolved', id, prospect } : { kind: 'missing', id };
+  });
+}
+
+// --- Persistence -----------------------------------------------------------
+// localStorage is device-local. Route membership is stored as a plain array of
+// prospect IDs and must fail safely (return []) on malformed or non-array data
+// so a bad write can never corrupt the app.
+
+export function serializeRoute(ids: string[]): string {
+  return JSON.stringify(ids);
+}
+
+export function parseRoute(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((id): id is string => typeof id === 'string');
+  } catch {
+    return [];
+  }
+}
+
+export interface RouteStorage {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+}
+
+export function loadRouteIds(storage: RouteStorage): string[] {
+  try {
+    return parseRoute(storage.getItem(ROUTE_STORAGE_KEY));
+  } catch {
+    return [];
+  }
+}
+
+export function saveRouteIds(storage: RouteStorage, ids: string[]): void {
+  try {
+    storage.setItem(ROUTE_STORAGE_KEY, serializeRoute(ids));
+  } catch {
+    // storage unavailable — route simply won't persist this session
+  }
 }
