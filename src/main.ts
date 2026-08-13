@@ -5,8 +5,15 @@ import {
   geocodeAutocomplete, geocodeSearch, getAccessSession, signIn,
 } from './api/client';
 import { Prospect, AutocompleteSuggestion, CreateProspectInput } from './types/prospect';
-import { buildGoogleMapsDirectionsUrl } from './google-maps';
-import { addRouteStop, moveRouteStop, removeRouteStop, resolveRoute } from './route-state';
+import { buildRouteGoogleMapsUrl } from './google-maps';
+import {
+  addRouteStop, moveRouteStop, removeRouteStop, resolveRoute,
+  MAX_ROUTE, loadRouteIds, saveRouteIds,
+} from './route-state';
+import { filterProspects, sortProspects, ListFilter, ListSort } from './prospect-list';
+import { upsertProspect, removeProspectById, prependProspect } from './prospect-actions';
+import { parseImportText, ImportRow } from './import-parser';
+import { RequestSequencer } from './search-coordination';
 
 // ─── Constants ─────────────────────────────────────────
 const DEFAULT_CENTER: [number, number] = [-95.7129, 37.0902];
@@ -30,9 +37,7 @@ let selectedProspectId: string | null = null;
 let searchQuery = '';
 let searchAbort: AbortController | null = null;
 let searchTimer: ReturnType<typeof setTimeout> | null = null;
-let searchRequestSequence = 0;
-type ListFilter = 'all' | 'not-dropped' | 'dropped' | 'route';
-type ListSort = 'nearby' | 'name';
+const searchSequencer = new RequestSequencer();
 let listFilter: ListFilter = 'all';
 let listSort: ListSort = 'nearby';
 
@@ -52,46 +57,11 @@ let edAcSug: AutocompleteSuggestion[] = [], edAcVis = false;
 let edAcAbort: AbortController | null = null, edAcTimer: ReturnType<typeof setTimeout> | null = null;
 
 // ─── Import State ──────────────────────────────────────
-type ImportRow = { name: string; address: string; status: 'pending' | 'geocoding' | 'ready' | 'duplicate' | 'needs_review' | 'error' | 'imported'; normalized?: string; lat?: number; lon?: number; placeId?: string; errorMsg?: string; duplicates?: Prospect[]; };
 let importRows: ImportRow[] = [];
 let importPhase: 'paste' | 'preview' | 'geocoding' | 'results' = 'paste';
 let importText = '';
 let importRunning = false;
 const IMPORT_CONCURRENCY = 3;
-
-function parseImportText(text: string): ImportRow[] {
-  const lines = text.split(/\r?\n/).filter(l => l.trim());
-  const rows: ImportRow[] = [];
-  let headerSkipped = false;
-  for (const line of lines) {
-    // Try common delimiters: | , tab
-    let parts: string[] | null = null;
-    if (line.includes('|')) parts = line.split('|');
-    else if (line.includes('\t')) parts = line.split('\t');
-    else if (line.includes(',')) {
-      // Only use comma if | and tab not found, and there are exactly 2+ parts
-      const csvParts = line.split(',');
-      if (csvParts.length >= 2) parts = csvParts;
-    }
-    if (!parts || parts.length < 2) continue;
-
-    const name = parts[0].trim();
-    const address = parts.slice(1).join(' ').trim().replace(/\s+/g, ' ');
-    if (!name || !address) continue;
-
-    // Skip header row
-    if (!headerSkipped && rows.length === 0 &&
-        /^(restaurant|business|name|商户|店名)/i.test(name) &&
-        /^(address|addr|地址|street)/i.test(address)) {
-      headerSkipped = true;
-      continue;
-    }
-    headerSkipped = true;
-
-    rows.push({ name, address, status: 'pending' });
-  }
-  return rows;
-}
 
 async function runImportGeocodeBatch() {
   importRunning = true; importPhase = 'geocoding';
@@ -146,7 +116,7 @@ async function saveImportRows() {
         duped++;
       } else {
         row.status = 'imported';
-        prospects.unshift(result as Prospect);
+        prospects = prependProspect(prospects, result as Prospect);
         saved++;
       }
     } catch (e: unknown) {
@@ -164,15 +134,12 @@ function resetImport() {
 }
 
 // ─── Route State ───────────────────────────────────────
-const ROUTE_KEY = 'otra.currentRoute';
-const MAX_ROUTE = 9;
 let routeIds: string[] = [];
 
 function loadRoute(): string[] {
-  try { const raw = localStorage.getItem(ROUTE_KEY); return raw ? JSON.parse(raw) as string[] : []; }
-  catch { return []; }
+  return loadRouteIds(localStorage);
 }
-function saveRoute() { try { localStorage.setItem(ROUTE_KEY, JSON.stringify(routeIds)); } catch { /* storage unavailable */ } }
+function saveRoute() { saveRouteIds(localStorage, routeIds); }
 function getRouteIndex(id: string): number { return routeIds.indexOf(id); }
 function isInRoute(id: string): boolean { return routeIds.indexOf(id) >= 0; }
 function getRouteResolution() { return resolveRoute(routeIds, activeProspects); }
@@ -210,22 +177,7 @@ function clearRoute() {
 // ─── Google Maps Handoff ───────────────────────────────
 
 function buildGoogleMapsUrl(origin: [number, number] | null): string | { error: string } {
-  const { items, missingIds } = getRouteResolution();
-  if (items.length === 0) return { error: 'Select at least one restaurant first.' };
-  if (missingIds.length) return { error: 'One or more route stops are unavailable. Remove them from Current Route before sending.' };
-
-  const invalid = items.filter(p => p.latitude == null || p.longitude == null);
-  if (invalid.length > 0) {
-    return { error: `${invalid[0].restaurant_name} needs a valid mapped address before this route can be sent.` };
-  }
-
-  const url = buildGoogleMapsDirectionsUrl(items.map(p => ({
-    latitude: p.latitude!,
-    longitude: p.longitude!,
-  })), origin);
-
-  if (url.length > 2000) return { error: 'Route URL is too long. This is unexpected with coordinate-based stops.' };
-  return url;
+  return buildRouteGoogleMapsUrl(getRouteResolution(), origin);
 }
 
 function handleSendToGoogleMaps() {
@@ -450,7 +402,7 @@ function toggleRouteSelection(id: string) {
 }
 
 async function mapToggleDropped(id: string, cur: boolean) {
-  try { const u = await toggleDroppedOff(id, cur); prospects = prospects.map(p => p.id === id ? u : p); refreshMarkers(); if (panelView === 'panel-detail' && selectedProspectId === id) renderPanel(); } catch (e: unknown) { errorMessage = e instanceof Error ? e.message : 'Failed'; renderPanel(); }
+  try { const u = await toggleDroppedOff(id, cur); prospects = upsertProspect(prospects, u); refreshMarkers(); if (panelView === 'panel-detail' && selectedProspectId === id) renderPanel(); } catch (e: unknown) { errorMessage = e instanceof Error ? e.message : 'Failed'; renderPanel(); }
 }
 
 function flyTo(p: Prospect) {
@@ -540,25 +492,25 @@ function scheduleSearch(immediate = false) {
 
 // ─── Data ──────────────────────────────────────────────
 async function loadData() {
-  const requestSequence = ++searchRequestSequence;
+  const requestSequence = searchSequencer.next();
   searchAbort?.abort();
   const controller = new AbortController();
   searchAbort = controller;
   loading = true; errorMessage = null; renderPanel();
   try {
     const visible = await fetchProspects(searchQuery || undefined, false, controller.signal);
-    if (requestSequence !== searchRequestSequence) return;
+    if (!searchSequencer.isCurrent(requestSequence)) return;
     prospects = visible;
     // Search results are display-only. The unfiltered load hydrates the route's
     // canonical source of truth and is never replaced by a filtered result.
     if (!searchQuery) activeProspects = visible;
   }
   catch (e: unknown) {
-    if (requestSequence !== searchRequestSequence || (e instanceof DOMException && e.name === 'AbortError')) return;
+    if (!searchSequencer.isCurrent(requestSequence) || (e instanceof DOMException && e.name === 'AbortError')) return;
     errorMessage = e instanceof Error ? e.message : 'Failed to load.';
   }
   finally {
-    if (requestSequence !== searchRequestSequence) return;
+    if (!searchSequencer.isCurrent(requestSequence)) return;
     loading = false;
     void createMap();
     refreshMarkers();
@@ -585,7 +537,7 @@ async function showArchived() {
 }
 
 // ─── Autocomplete ──────────────────────────────────────
-let acSeq = 0; // monotonically increasing sequence to reject stale responses
+const acSequencer = new RequestSequencer(); // monotonically increasing sequence to reject stale responses
 
 function triggerAc(
   text: string,
@@ -602,7 +554,7 @@ function triggerAc(
 
   if (text.trim().length < 2) { setSug([]); setVis(false); return; }
 
-  const seq = ++acSeq; // capture current sequence number
+  const seq = acSequencer.next(); // capture current sequence number
   const query = text.trim();
 
   const t = setTimeout(async () => {
@@ -610,11 +562,11 @@ function triggerAc(
     try {
       const r = await geocodeAutocomplete(query, ctrl.signal);
       // Only accept result if no newer input has arrived (ISSUE 4 guard)
-      if (seq !== acSeq) return;
+      if (!acSequencer.isCurrent(seq)) return;
       setSug(r); setVis(r.length > 0);
     } catch {
       // Silently ignore aborted/failed — only if still current
-      if (seq !== acSeq) return;
+      if (!acSequencer.isCurrent(seq)) return;
       setSug([]); setVis(false);
     }
     rebuild();
@@ -663,14 +615,14 @@ async function confirmAdd() {
   try {
     const r = await createProspect(inp);
     if ('code' in r && r.code === 'DUPLICATE_DETECTED') { addDuplicates = r.duplicates; addStep = 'duplicate'; submitting = false; renderPanel(); return; }
-    const created = r as Prospect; prospects.unshift(created); activeProspects.unshift(created); resetAdd(); panelView = 'panel-list'; refreshMarkers(); submitting = false; renderPanel();
+    const created = r as Prospect; prospects = prependProspect(prospects, created); activeProspects = prependProspect(activeProspects, created); resetAdd(); panelView = 'panel-list'; refreshMarkers(); submitting = false; renderPanel();
   } catch (er: unknown) { errorMessage = er instanceof Error ? er.message : "Couldn't save."; submitting = false; renderPanel(); }
 }
 
 async function confirmAddDup() {
   submitting = true; renderPanel();
   const inp: CreateProspectInput = { restaurant_name: addName, address_input: addAddress, address_normalized: addNormalized || null, latitude: addLat, longitude: addLon, geocode_provider: addLat !== null ? 'Geoapify' : null, geocode_reference: addPlaceId || null, skip_duplicate_check: true };
-  try { const created = await createProspect(inp) as Prospect; prospects.unshift(created); activeProspects.unshift(created); resetAdd(); panelView = 'panel-list'; refreshMarkers(); submitting = false; renderPanel(); }
+  try { const created = await createProspect(inp) as Prospect; prospects = prependProspect(prospects, created); activeProspects = prependProspect(activeProspects, created); resetAdd(); panelView = 'panel-list'; refreshMarkers(); submitting = false; renderPanel(); }
   catch (er: unknown) { errorMessage = er instanceof Error ? er.message : "Couldn't save."; submitting = false; renderPanel(); }
 }
 
@@ -708,19 +660,19 @@ async function confirmEdit() {
   try {
     const r = await updateProspect({ id: selectedProspectId, restaurant_name: edName, address_input: edAddr, address_normalized: edNorm || null, latitude: edLat, longitude: edLon, geocode_provider: edLat !== null ? 'Geoapify' : null, geocode_reference: edPid || null });
     if ('code' in r && r.code === 'DUPLICATE_DETECTED') { edDups = r.duplicates; edStep = 'duplicate'; submitting = false; renderPanel(); return; }
-    const u = r as Prospect; prospects = prospects.map(p => p.id === u.id ? u : p); activeProspects = activeProspects.map(p => p.id === u.id ? u : p); selectedProspectId = u.id; panelView = 'panel-detail'; refreshMarkers(); submitting = false; renderPanel();
+    const u = r as Prospect; prospects = upsertProspect(prospects, u); activeProspects = upsertProspect(activeProspects, u); selectedProspectId = u.id; panelView = 'panel-detail'; refreshMarkers(); submitting = false; renderPanel();
   } catch (er: unknown) { errorMessage = er instanceof Error ? er.message : 'Failed to update.'; submitting = false; renderPanel(); }
 }
 
 async function confirmEditDup() {
   if (!selectedProspectId) return; submitting = true; renderPanel();
-  try { const r = await updateProspect({ id: selectedProspectId, restaurant_name: edName, address_input: edAddr, address_normalized: edNorm || null, latitude: edLat, longitude: edLon, geocode_provider: edLat !== null ? 'Geoapify' : null, geocode_reference: edPid || null, skip_duplicate_check: true }); const u = r as Prospect; prospects = prospects.map(p => p.id === u.id ? u : p); activeProspects = activeProspects.map(p => p.id === u.id ? u : p); selectedProspectId = u.id; panelView = 'panel-detail'; refreshMarkers(); submitting = false; renderPanel(); }
+  try { const r = await updateProspect({ id: selectedProspectId, restaurant_name: edName, address_input: edAddr, address_normalized: edNorm || null, latitude: edLat, longitude: edLon, geocode_provider: edLat !== null ? 'Geoapify' : null, geocode_reference: edPid || null, skip_duplicate_check: true }); const u = r as Prospect; prospects = upsertProspect(prospects, u); activeProspects = upsertProspect(activeProspects, u); selectedProspectId = u.id; panelView = 'panel-detail'; refreshMarkers(); submitting = false; renderPanel(); }
   catch (er: unknown) { errorMessage = er instanceof Error ? er.message : 'Failed to update.'; submitting = false; renderPanel(); }
 }
 
 // ─── Actions ───────────────────────────────────────────
 async function handleToggleDropped(id: string, cur: boolean) {
-  try { const u = await toggleDroppedOff(id, cur); prospects = prospects.map(p => p.id === id ? u : p); activeProspects = activeProspects.map(p => p.id === id ? u : p); refreshMarkers(); if ((panelView === 'panel-detail' && selectedProspectId === id) || panelView === 'panel-list' || panelView === 'panel-route') renderPanel(); }
+  try { const u = await toggleDroppedOff(id, cur); prospects = upsertProspect(prospects, u); activeProspects = upsertProspect(activeProspects, u); refreshMarkers(); if ((panelView === 'panel-detail' && selectedProspectId === id) || panelView === 'panel-list' || panelView === 'panel-route') renderPanel(); }
   catch (e: unknown) { errorMessage = e instanceof Error ? e.message : 'Failed.'; renderPanel(); }
 }
 
@@ -728,7 +680,7 @@ async function handleArchive(id: string) {
   try {
     const archived = await archiveProspect(id);
     archivedProspects = [archived, ...archivedProspects.filter(p => p.id !== id)];
-    prospects = prospects.filter(p => p.id !== id); activeProspects = activeProspects.filter(p => p.id !== id); refreshMarkers();
+    prospects = removeProspectById(prospects, id); activeProspects = removeProspectById(activeProspects, id); refreshMarkers();
     if (selectedProspectId === id) { selectedProspectId = null; panelView = 'panel-list'; }
     renderPanel();
   }
@@ -739,7 +691,7 @@ async function handleRestore(id: string) {
   try {
     const u = await restoreProspect(id);
     archivedProspects = archivedProspects.filter(p => p.id !== id);
-    prospects.unshift(u); activeProspects.unshift(u); refreshMarkers();
+    prospects = prependProspect(prospects, u); activeProspects = prependProspect(activeProspects, u); refreshMarkers();
     if (selectedProspectId === id) { selectedProspectId = id; panelView = 'panel-detail'; }
     renderPanel();
   }
@@ -748,7 +700,7 @@ async function handleRestore(id: string) {
 
 async function handleDelete(id: string) {
   if (!confirm('Permanently delete?')) return;
-  try { await deleteProspect(id); removeFromRoute(id); prospects = prospects.filter(p => p.id !== id); activeProspects = activeProspects.filter(p => p.id !== id); refreshMarkers(); if (selectedProspectId === id) { selectedProspectId = null; panelView = 'panel-list'; } renderPanel(); }
+  try { await deleteProspect(id); removeFromRoute(id); prospects = removeProspectById(prospects, id); activeProspects = removeProspectById(activeProspects, id); refreshMarkers(); if (selectedProspectId === id) { selectedProspectId = null; panelView = 'panel-list'; } renderPanel(); }
   catch (e: unknown) { errorMessage = e instanceof Error ? e.message : 'Failed.'; renderPanel(); }
 }
 
@@ -832,30 +784,11 @@ function rList(p: HTMLElement) {
 }
 
 function getListProspects(): Prospect[] {
-  const filtered = prospects.filter(prospect => {
-    if (listFilter === 'not-dropped') return !prospect.dropped_off;
-    if (listFilter === 'dropped') return prospect.dropped_off;
-    if (listFilter === 'route') return isInRoute(prospect.id);
-    return true;
-  });
-  return [...filtered].sort((a, b) => {
-    if (listSort === 'nearby' && currentLocation) {
-      const distanceA = distanceFromCurrentLocation(a);
-      const distanceB = distanceFromCurrentLocation(b);
-      if (distanceA !== distanceB) return distanceA - distanceB;
-    }
-    return a.restaurant_name.localeCompare(b.restaurant_name);
-  });
-}
-
-function distanceFromCurrentLocation(prospect: Prospect): number {
-  if (!currentLocation || prospect.latitude == null || prospect.longitude == null) return Number.POSITIVE_INFINITY;
-  const [originLon, originLat] = currentLocation;
-  const latitudeRadians = Math.PI / 180;
-  const dLat = (prospect.latitude - originLat) * latitudeRadians;
-  const dLon = (prospect.longitude - originLon) * latitudeRadians;
-  const a = Math.sin(dLat / 2) ** 2 + Math.cos(originLat * latitudeRadians) * Math.cos(prospect.latitude * latitudeRadians) * Math.sin(dLon / 2) ** 2;
-  return 3958.8 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return sortProspects(
+    filterProspects(prospects, listFilter, routeIds),
+    listSort,
+    currentLocation,
+  );
 }
 
 function rAdd(p: HTMLElement) {

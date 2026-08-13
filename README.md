@@ -79,6 +79,8 @@ Server-side environment variables configured on Netlify:
 TURSO_DATABASE_URL=libsql://<your-db-name>.turso.io
 TURSO_AUTH_TOKEN=<your-turso-auth-token>
 GEOAPIFY_API_KEY=<your-geoapify-api-key>
+OTRA_ACCESS_CODE=<shared field-tool access code>
+OTRA_SESSION_SECRET=<long random session-signing secret>
 ```
 
 > **Warning:** Never commit `.env` files or expose authentication tokens.
@@ -88,7 +90,7 @@ GEOAPIFY_API_KEY=<your-geoapify-api-key>
 ## Local Development & Build Instructions
 
 ### Prerequisites
-- Node.js (v18+)
+- Node.js 22.12+ (24.x recommended — matches CI and the Netlify functions runtime; Vite 8 and the `--experimental-strip-types` test runner require it)
 - npm
 - Netlify CLI (`npx netlify`)
 
@@ -135,7 +137,9 @@ Authenticated sessions use a signed, HTTP-only cookie. The prospects API and Geo
 
 The repository is linked to Netlify project **`on-the-road-a`** (`https://on-the-road-a.netlify.app`).
 
-Commits pushed to the `main` branch trigger automated Netlify production builds (`npm run build`), deploying the static frontend assets (`dist`) alongside serverless endpoints (`netlify/functions`).
+Pushes to the `main` branch trigger automated Netlify production builds (`npm run build`) that deploy the static frontend assets (`dist`) alongside serverless endpoints (`netlify/functions`). Build logs are available under each deploy in the Netlify dashboard.
+
+Netlify's secret scanning runs during production builds. If it flags a match (for example, a shared access code whose value coincides with application text), it blocks the deploy until the finding is reviewed and resolved in the Netlify dashboard. Because production builds carry the configured secret environment variables while deploy previews do not, a false positive here can fail a production deploy even when CI and preview builds succeed.
 
 ---
 
@@ -143,6 +147,9 @@ Commits pushed to the `main` branch trigger automated Netlify production builds 
 
 | Method | Endpoint | Description |
 | :--- | :--- | :--- |
+| `GET` | `/api/auth` | Check the current access session |
+| `POST` | `/api/auth` | Submit the access code to create a session |
+| `DELETE` | `/api/auth` | Clear the session (log out) |
 | `GET` | `/api/prospects` | List active prospects |
 | `GET` | `/api/prospects?search=...` | Search prospects by name/address |
 | `GET` | `/api/prospects?archived=true` | List with archived |

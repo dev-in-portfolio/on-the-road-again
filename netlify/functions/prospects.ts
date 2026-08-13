@@ -5,6 +5,7 @@ import { Prospect } from '../../src/types/prospect.js';
 import crypto from 'node:crypto';
 import { authorize } from './_shared/auth.js';
 import { rateLimit } from './_shared/rate-limit.js';
+import { isDuplicate, nameFingerprint, normalizeForComparison } from './_shared/duplicates.js';
 
 // Helper to convert DB row to Prospect JSON model
 function mapRowToProspect(row: Record<string, unknown>): Prospect {
@@ -40,14 +41,6 @@ function validateCoordinates(lat: unknown, lng: unknown): string | null {
   return null;
 }
 
-function normalizeForComparison(s: string): string {
-  return s
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
 async function checkDuplicates(
   db: ReturnType<typeof getDb>,
   name: string,
@@ -57,31 +50,47 @@ async function checkDuplicates(
   const normName = normalizeForComparison(name);
   const normAddr = normalizeForComparison(address);
 
-  const allResult = excludeId
-    ? await db.execute({
-        sql: 'SELECT * FROM prospects WHERE id != ?',
-        args: [excludeId],
-      })
-    : await db.execute('SELECT * FROM prospects');
+  // Narrow candidates in SQL using a case-insensitive alphanumeric subsequence
+  // fingerprint of the name. The authoritative match still happens in JS below
+  // against the full normalization, so this predicate is deliberately a
+  // superset: it may over-match but never under-matches. That preserves the
+  // existing duplicate-warning behavior (case/punctuation variants included)
+  // while avoiding fetching and normalizing every row on each save.
+  const fingerprint = nameFingerprint(normName);
+
+  let result;
+  if (fingerprint.length > 0) {
+    const pattern = fingerprint.split('').join('%');
+    result = excludeId
+      ? await db.execute({
+          sql: "SELECT * FROM prospects WHERE id != ? AND LOWER(restaurant_name) LIKE '%' || ? || '%'",
+          args: [excludeId, pattern],
+        })
+      : await db.execute({
+          sql: "SELECT * FROM prospects WHERE LOWER(restaurant_name) LIKE '%' || ? || '%'",
+          args: [pattern],
+        });
+  } else {
+    result = excludeId
+      ? await db.execute({
+          sql: 'SELECT * FROM prospects WHERE id != ?',
+          args: [excludeId],
+        })
+      : await db.execute('SELECT * FROM prospects');
+  }
 
   const candidates: Prospect[] = [];
 
-  for (const row of allResult.rows) {
+  for (const row of result.rows) {
     const p = mapRowToProspect(row as Record<string, unknown>);
-    const pNormName = normalizeForComparison(p.restaurant_name);
-    const pNormAddr = normalizeForComparison(p.address_input);
-    const pNormAddrNorm = p.address_normalized
-      ? normalizeForComparison(p.address_normalized)
-      : '';
-
-    const nameMatch = pNormName === normName;
-    const addrMatch =
-      pNormAddr === normAddr || pNormAddrNorm === normAddr;
-
-    if (nameMatch && addrMatch) {
-      candidates.push(p);
-    } else if (nameMatch && p.latitude !== null && p.longitude !== null) {
-      // Same name, check proximity (informational only for now)
+    if (isDuplicate({
+      normalizedName: normalizeForComparison(p.restaurant_name),
+      normalizedAddressInput: normalizeForComparison(p.address_input),
+      normalizedAddressNormalized: p.address_normalized
+        ? normalizeForComparison(p.address_normalized)
+        : '',
+      hasCoordinates: p.latitude !== null && p.longitude !== null,
+    }, normName, normAddr)) {
       candidates.push(p);
     }
   }
