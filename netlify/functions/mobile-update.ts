@@ -1,5 +1,6 @@
 import type { Config } from '@netlify/functions';
 import { authorize, json } from './_shared/auth.js';
+import { corsPreflight, withCors } from './_shared/cors.js';
 
 type Channel = 'beta' | 'stable';
 
@@ -8,7 +9,7 @@ function env(name: string): string | null {
   return value || null;
 }
 
-export default async (req: Request) => {
+async function handle(req: Request) {
   const authError = authorize(req);
   if (authError) return authError;
   const channel = (new URL(req.url).pathname.match(/\/([^/]+)\.json$/)?.[1] || 'stable') as Channel;
@@ -27,6 +28,8 @@ export default async (req: Request) => {
     sha256, size: Number(env(`${prefix}_SIZE`) || 0) || null,
     releaseNotes: env(`${prefix}_RELEASE_NOTES`) || '', packageName: 'com.darkstar.otra',
   });
-};
+}
+
+export default async (req: Request) => corsPreflight(req) || withCors(req, await handle(req));
 
 export const config: Config = { path: '/mobile/android/:channel.json' };

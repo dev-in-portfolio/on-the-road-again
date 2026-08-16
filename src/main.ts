@@ -15,6 +15,10 @@ import { upsertProspect, removeProspectById, prependProspect } from './prospect-
 import { parseImportText, ImportRow } from './import-parser';
 import { RequestSequencer } from './search-coordination';
 import { emptyFieldState, loadFieldState, saveFieldState, type FieldState, type PendingOperation } from './field-state';
+import { OTRA_BUILD, OTRA_PACKAGE_ID, OTRA_VERSION } from './app-release';
+import { checkForAndroidUpdate, getInstalledAppInfo, type InstalledAppInfo } from './update-manager';
+import { downloadVerifyAndInstall } from './android-updater';
+import type { AndroidRelease } from './mobile-updates';
 
 // ─── Constants ─────────────────────────────────────────
 const DEFAULT_CENTER: [number, number] = [-95.7129, 37.0902];
@@ -33,6 +37,10 @@ let errorMessage: string | null = null;
 let submitting = false;
 let fieldState: FieldState = emptyFieldState();
 let syncMessage: string | null = null;
+let installedAppInfo: InstalledAppInfo = { version: OTRA_VERSION, build: OTRA_BUILD, packageId: OTRA_PACKAGE_ID };
+let availableUpdate: AndroidRelease | null = null;
+let updateStatus = 'Not checked';
+let updateChecking = false;
 
 type View = 'panel-list' | 'panel-route' | 'panel-add' | 'panel-detail' | 'panel-edit' | 'panel-archived' | 'panel-import';
 let panelView: View = 'panel-list';
@@ -208,6 +216,8 @@ async function flushOfflineOperations() {
   for (const operation of fieldState.pendingOperations) {
     try {
       if (operation.kind === 'UPDATE_PROSPECT') await updateProspect(operation.payload as Parameters<typeof updateProspect>[0]);
+      else if (operation.kind === 'CREATE_PROSPECT') await createProspect(operation.payload as CreateProspectInput);
+      else if (operation.kind === 'DELETE_PROSPECT') await deleteProspect(operation.prospectId || String((operation.payload as { id?: string }).id || ''));
     } catch {
       remaining.push({ ...operation, attempts: operation.attempts + 1 });
     }
@@ -552,10 +562,15 @@ async function handleLocate() {
 function setupShell() {
   const app = document.getElementById('app')!;
   app.innerHTML = `<div id="map-container"></div><div id="top-bar"><div id="search-bar"></div><div id="sync-status" aria-live="polite"></div></div><div id="panel-container"></div><nav id="bottom-nav" aria-label="Primary navigation"><button data-screen="map" class="nav-item active"><span>⌖</span><small>Map</small></button><button data-screen="route" class="nav-item"><span>⚡</span><small>Route</small><b id="nav-route-count">0</b></button><button data-screen="prospects" class="nav-item"><span>◉</span><small>Prospects</small></button><button data-screen="activity" class="nav-item"><span>✓</span><small>Activity</small></button><button data-screen="more" class="nav-item"><span>⋯</span><small>More</small></button></nav>`;
+  const updateBanner = document.createElement('div');
+  updateBanner.id = 'update-banner';
+  updateBanner.setAttribute('aria-live', 'polite');
+  app.insertBefore(updateBanner, document.getElementById('panel-container'));
   document.querySelectorAll<HTMLButtonElement>('.nav-item').forEach(button => button.addEventListener('click', () => navigateScreen(button.dataset.screen as AppScreen)));
   setupMapControls();
   renderPanel();
   updateSearchBar();
+  renderUpdateBanner();
 }
 
 function navigateScreen(screen: AppScreen) {
@@ -568,6 +583,48 @@ function navigateScreen(screen: AppScreen) {
   document.querySelectorAll('.nav-item').forEach(button => button.classList.toggle('active', button.getAttribute('data-screen') === screen));
   updateSearchBar();
   renderPanel();
+}
+
+async function checkForUpdates(force = false) {
+  if (updateChecking) return;
+  updateChecking = true;
+  try {
+    const result = await checkForAndroidUpdate({ force });
+    installedAppInfo = result.installed;
+    availableUpdate = result.release;
+    updateStatus = result.error ? `Unavailable · ${result.error}` : result.release ? `Update ${result.release.version} available` : 'Up to date';
+  } catch {
+    updateStatus = 'Update check unavailable';
+  } finally {
+    updateChecking = false;
+    renderUpdateBanner();
+    if (appScreen === 'more') renderPanel();
+  }
+}
+
+async function startAndroidUpdate() {
+  if (!availableUpdate) return;
+  persistFieldContext();
+  updateStatus = 'Downloading update…';
+  renderUpdateBanner();
+  try {
+    await downloadVerifyAndInstall(availableUpdate, installedAppInfo.build);
+    updateStatus = 'Installer opened';
+  } catch (error: unknown) {
+    updateStatus = error instanceof Error ? error.message : 'Update installation failed.';
+  }
+  renderUpdateBanner();
+  if (appScreen === 'more') renderPanel();
+}
+
+function renderUpdateBanner() {
+  const banner = document.getElementById('update-banner');
+  if (!banner) return;
+  banner.innerHTML = availableUpdate
+    ? `<div class="update-banner-card"><span>OTRA ${esc(availableUpdate.version)} is available${availableUpdate.critical ? ' · Required' : ''}</span><button class="btn btn-primary btn-small" id="update-now">Update</button><button class="btn btn-small btn-secondary" id="update-later">Later</button></div>`
+    : '';
+  document.getElementById('update-now')?.addEventListener('click', () => { void startAndroidUpdate(); });
+  document.getElementById('update-later')?.addEventListener('click', () => { availableUpdate = null; renderUpdateBanner(); });
 }
 
 function setupMapControls() {
@@ -893,7 +950,23 @@ function rActivity(p: HTMLElement) {
 }
 
 function rMore(p: HTMLElement) {
-  p.innerHTML = `<section class="screen-panel more-screen"><div class="screen-heading"><div><span class="field-kicker">BACKSTAGE</span><h1>More</h1><p>Low-frequency field tools and diagnostics</p></div></div><div class="more-grid"><button class="more-tile" id="more-add"><span>＋</span><strong>Add Prospect</strong><small>Create one new field record</small></button><button class="more-tile" id="more-import"><span>▤</span><strong>Import</strong><small>Bring in a prepared setlist</small></button><button class="more-tile" id="more-archive"><span>▣</span><strong>Archived</strong><small>Restore hidden records</small></button><div class="more-tile diagnostics"><span>⌁</span><strong>Field diagnostics</strong><small>Version 1.0.0 · Build 10000 · ${syncMessage || 'Ready'}</small></div></div></section>`;
+  p.innerHTML = `<section class="screen-panel more-screen"><div class="screen-heading"><div><span class="field-kicker">BACKSTAGE</span><h1>More</h1><p>Low-frequency field tools and diagnostics</p></div></div><div class="more-grid"><button class="more-tile" id="more-add"><span>＋</span><strong>Add Prospect</strong><small>Create one new field record</small></button><button class="more-tile" id="more-import"><span>▤</span><strong>Import</strong><small>Bring in a prepared setlist</small></button><button class="more-tile" id="more-archive"><span>▣</span><strong>Archived</strong><small>Restore hidden records</small></button><div class="more-tile diagnostics"><span>⌁</span><strong>Field diagnostics</strong><small>Version ${esc(installedAppInfo.version)} · Build ${installedAppInfo.build} · ${esc(updateStatus)}</small></div></div></section>`;
+  const diagnostics = p.querySelector<HTMLElement>('.diagnostics');
+  const diagnosticText = diagnostics?.querySelector('small');
+  if (diagnosticText) diagnosticText.textContent = `Version ${installedAppInfo.version} · Build ${installedAppInfo.build} · ${updateStatus}`;
+  if (diagnostics) {
+    const checkButton = document.createElement('button');
+    checkButton.className = 'btn btn-secondary btn-small'; checkButton.id = 'more-check-updates';
+    checkButton.textContent = updateChecking ? 'Checking…' : 'Check for updates';
+    checkButton.addEventListener('click', () => { void checkForUpdates(true); });
+    diagnostics.appendChild(checkButton);
+    if (availableUpdate) {
+      const updateButton = document.createElement('button');
+      updateButton.className = 'btn btn-primary btn-small'; updateButton.textContent = `Update ${availableUpdate.version}`;
+      updateButton.addEventListener('click', () => { void startAndroidUpdate(); });
+      diagnostics.appendChild(updateButton);
+    }
+  }
   document.getElementById('more-add')?.addEventListener('click', () => { resetAdd(); panelView = 'panel-add'; renderPanel(); });
   document.getElementById('more-import')?.addEventListener('click', () => { resetImport(); panelView = 'panel-import'; renderPanel(); });
   document.getElementById('more-archive')?.addEventListener('click', () => { void showArchived(); });
@@ -1223,6 +1296,8 @@ async function bootstrap() {
     listFilter = fieldState.filters.listFilter as ListFilter;
     listSort = fieldState.filters.listSort as ListSort;
     void loadData();
+    void getInstalledAppInfo().then(info => { installedAppInfo = info; renderUpdateBanner(); });
+    void checkForUpdates();
   } catch (error: unknown) {
     renderAccessGate(error instanceof Error ? error.message : 'Private access is unavailable.');
   }
@@ -1243,6 +1318,8 @@ function renderAccessGate(message = '') {
       setupShell();
       routeIds = fieldState.routeIds.length ? fieldState.routeIds : loadRoute();
       void loadData();
+      void getInstalledAppInfo().then(info => { installedAppInfo = info; renderUpdateBanner(); });
+      void checkForUpdates();
     } catch (error: unknown) {
       renderAccessGate(error instanceof Error ? error.message : 'Private access was not granted.');
     }
@@ -1255,6 +1332,7 @@ document.addEventListener('visibilitychange', () => {
     persistFieldContext();
     void flushOfflineOperations();
     void loadData();
+    void checkForUpdates();
   }
 });
 void bootstrap();

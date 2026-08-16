@@ -6,6 +6,7 @@ import crypto from 'node:crypto';
 import { authorize } from './_shared/auth.js';
 import { rateLimit } from './_shared/rate-limit.js';
 import { isDuplicate, nameFingerprint, normalizeForComparison } from './_shared/duplicates.js';
+import { corsPreflight, withCors } from './_shared/cors.js';
 
 // Helper to convert DB row to Prospect JSON model
 function mapRowToProspect(row: Record<string, unknown>): Prospect {
@@ -98,7 +99,7 @@ async function checkDuplicates(
   return candidates;
 }
 
-export default async (req: Request, _context: Context) => {
+async function handle(req: Request, _context: Context) {
   const authError = authorize(req);
   if (authError) return authError;
   const limitError = rateLimit(req, 'prospects', req.method === 'GET' ? 180 : 60, 60 * 1000);
@@ -461,4 +462,6 @@ export default async (req: Request, _context: Context) => {
       }
     );
   }
-};
+}
+
+export default async (req: Request, context: Context) => corsPreflight(req) || withCors(req, await handle(req, context));

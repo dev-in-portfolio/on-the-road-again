@@ -2,8 +2,9 @@ import type { Context } from '@netlify/functions';
 import { geocodeAutocomplete, geocodeSearch, isHighPrecisionResult } from '../../server/geocode/client.js';
 import { authorize } from './_shared/auth.js';
 import { rateLimit } from './_shared/rate-limit.js';
+import { corsPreflight, withCors } from './_shared/cors.js';
 
-export default async (req: Request, _context: Context) => {
+async function handle(req: Request, _context: Context) {
   const authError = authorize(req);
   if (authError) return authError;
   const limitError = rateLimit(req, 'geocode', 90, 60 * 1000);
@@ -79,4 +80,6 @@ export default async (req: Request, _context: Context) => {
       { status: 502, headers: { 'Content-Type': 'application/json' } }
     );
   }
-};
+}
+
+export default async (req: Request, context: Context) => corsPreflight(req) || withCors(req, await handle(req, context));

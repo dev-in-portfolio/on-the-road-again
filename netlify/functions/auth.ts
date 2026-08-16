@@ -1,8 +1,9 @@
 import type { Config } from '@netlify/functions';
 import { authConfigurationError, clearSession, createSession, isAuthorized, json } from './_shared/auth.js';
 import { rateLimit } from './_shared/rate-limit.js';
+import { corsPreflight, withCors } from './_shared/cors.js';
 
-export default async (req: Request) => {
+async function handle(req: Request) {
   const configError = authConfigurationError();
   if (configError) return configError;
 
@@ -14,6 +15,8 @@ export default async (req: Request) => {
   if (limitError) return limitError;
   const body = await req.json().catch(() => null);
   return createSession(body && typeof body === 'object' ? (body as { accessCode?: unknown }).accessCode : null, req);
-};
+}
+
+export default async (req: Request) => corsPreflight(req) || withCors(req, await handle(req));
 
 export const config: Config = { path: '/api/auth' };

@@ -9,8 +9,8 @@ android {
         targetSdkVersion rootProject.ext.targetSdkVersion
         // Release policy: versionCode = major*10000 + minor*100 + patch.
         // Keep this identity and signing lineage stable for in-place updates.
-        versionCode 10000
-        versionName "1.0.0"
+        versionCode 10001
+        versionName "1.0.1"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -18,10 +18,22 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    def releaseKeystorePath = System.getenv('OTRA_ANDROID_KEYSTORE_PATH')
+    signingConfigs {
+        release {
+            if (releaseKeystorePath) {
+                storeFile file(releaseKeystorePath)
+                storePassword System.getenv('OTRA_ANDROID_KEYSTORE_PASSWORD')
+                keyAlias System.getenv('OTRA_ANDROID_KEY_ALIAS')
+                keyPassword System.getenv('OTRA_ANDROID_KEY_PASSWORD')
+            }
+        }
+    }
     buildTypes {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            if (System.getenv('OTRA_ANDROID_KEYSTORE_PATH')) signingConfig signingConfigs.release
         }
     }
 }
