@@ -52,7 +52,9 @@ jobs:
         run: |
           APK=android/app/build/outputs/apk/release/app-release.apk
           test -s "$APK"
-          apksigner verify --print-certs "$APK"
+          APKSIGNER="$ANDROID_HOME/build-tools/$(ls -1 "$ANDROID_HOME/build-tools" | sort -V | tail -1)/apksigner"
+          test -x "$APKSIGNER"
+          "$APKSIGNER" verify --print-certs "$APK"
           SHA=$(sha256sum "$APK" | cut -d' ' -f1)
           SIZE=$(stat -c%s "$APK")
           VERSION=$(sed -n "s/.*versionName[[:space:]]*['\"]\([^'\"]*\)['\"].*/\1/p" android/app/build.gradle | head -1)
