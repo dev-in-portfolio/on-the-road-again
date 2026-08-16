@@ -7,14 +7,15 @@ import {
   DuplicateResponse,
 } from '../types/prospect';
 
-const API_BASE = '/api/prospects';
-const GEOCODE_BASE = '/api/geocode';
-const AUTH_BASE = '/api/auth';
+const API_ORIGIN = (import.meta.env.VITE_API_ORIGIN || '').replace(/\/$/, '');
+const API_BASE = `${API_ORIGIN}/api/prospects`;
+const GEOCODE_BASE = `${API_ORIGIN}/api/geocode`;
+const AUTH_BASE = `${API_ORIGIN}/api/auth`;
 
 export type AccessSession = { authenticated: boolean };
 
 export async function getAccessSession(): Promise<AccessSession> {
-  const res = await fetch(AUTH_BASE, { credentials: 'same-origin' });
+  const res = await fetch(AUTH_BASE, { credentials: 'include' });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || 'Unable to check private access.');
   return data as AccessSession;
@@ -23,7 +24,7 @@ export async function getAccessSession(): Promise<AccessSession> {
 export async function signIn(accessCode: string): Promise<AccessSession> {
   const res = await fetch(AUTH_BASE, {
     method: 'POST',
-    credentials: 'same-origin',
+    credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ accessCode }),
   });
@@ -45,7 +46,7 @@ export async function fetchProspects(
   const qs = params.toString();
   const url = qs ? `${API_BASE}?${qs}` : API_BASE;
 
-  const res = await fetch(url, { signal });
+  const res = await fetch(url, { signal, credentials: 'include' });
   if (!res.ok) {
     const errorData = await res.json().catch(() => ({}));
     throw new Error(errorData.error || `Failed to fetch prospects (Status ${res.status})`);
@@ -58,6 +59,7 @@ export async function createProspect(
 ): Promise<Prospect | DuplicateResponse> {
   const res = await fetch(API_BASE, {
     method: 'POST',
+    credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
   });
@@ -80,6 +82,7 @@ export async function updateProspect(
 ): Promise<Prospect | DuplicateResponse> {
   const res = await fetch(API_BASE, {
     method: 'PATCH',
+    credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
   });
@@ -118,6 +121,7 @@ export async function restoreProspect(id: string): Promise<Prospect> {
 export async function deleteProspect(id: string): Promise<void> {
   const res = await fetch(`${API_BASE}?id=${encodeURIComponent(id)}`, {
     method: 'DELETE',
+    credentials: 'include',
   });
 
   if (!res.ok) {
@@ -134,7 +138,7 @@ export async function geocodeAutocomplete(
 ): Promise<AutocompleteSuggestion[]> {
   const res = await fetch(
     `${GEOCODE_BASE}?action=autocomplete&text=${encodeURIComponent(text)}`,
-    { signal }
+    { signal, credentials: 'include' }
   );
   if (!res.ok) {
     const errorData = await res.json().catch(() => ({}));
@@ -147,7 +151,8 @@ export async function geocodeSearch(
   text: string
 ): Promise<GeocodeSearchResponse> {
   const res = await fetch(
-    `${GEOCODE_BASE}?action=search&text=${encodeURIComponent(text)}`
+    `${GEOCODE_BASE}?action=search&text=${encodeURIComponent(text)}`,
+    { credentials: 'include' }
   );
   if (!res.ok) {
     const errorData = await res.json().catch(() => ({}));

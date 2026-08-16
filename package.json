@@ -6,15 +6,18 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "build:mobile": "vite build --mode mobile",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "test": "node --experimental-strip-types --test src/*.test.ts netlify/functions/_shared/*.test.ts",
-    "cap:sync": "npm run build && npx cap sync android",
+    "cap:sync": "npm run build:mobile && npx cap sync android",
     "android:debug": "npm run cap:sync && npx cap open android"
   },
   "dependencies": {
     "@capacitor/android": "^8.5.0",
+    "@capacitor/app": "^8.1.1",
     "@capacitor/core": "^8.5.0",
+    "@capacitor/filesystem": "^8.1.2",
     "@capacitor/geolocation": "^8.2.2",
     "@capacitor/network": "^8.0.1",
     "@libsql/client": "^0.14.0",

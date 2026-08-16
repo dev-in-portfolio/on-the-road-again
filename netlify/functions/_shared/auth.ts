@@ -56,16 +56,20 @@ export function createSession(accessCode: unknown, req: Request): Response {
   const expiresAt = Date.now() + SESSION_TTL_SECONDS * 1000;
   const payload = `v1.${expiresAt}`;
   const token = `${payload}.${sign(payload, secret)}`;
-  const secure = new URL(req.url).protocol === 'https:' ? '; Secure' : '';
+  const nativeOrigin = ['https://localhost', 'capacitor://localhost', 'http://localhost'].includes(req.headers.get('origin') || '');
+  const sameSite = nativeOrigin ? 'None' : 'Strict';
+  const secure = new URL(req.url).protocol === 'https:' || nativeOrigin ? '; Secure' : '';
   return json({ authenticated: true }, 200, {
-    'Set-Cookie': `${SESSION_COOKIE}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${SESSION_TTL_SECONDS}${secure}`,
+    'Set-Cookie': `${SESSION_COOKIE}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=${sameSite}; Max-Age=${SESSION_TTL_SECONDS}${secure}`,
   });
 }
 
 export function clearSession(req: Request): Response {
-  const secure = new URL(req.url).protocol === 'https:' ? '; Secure' : '';
+  const nativeOrigin = ['https://localhost', 'capacitor://localhost', 'http://localhost'].includes(req.headers.get('origin') || '');
+  const sameSite = nativeOrigin ? 'None' : 'Strict';
+  const secure = new URL(req.url).protocol === 'https:' || nativeOrigin ? '; Secure' : '';
   return json({ authenticated: false }, 200, {
-    'Set-Cookie': `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0${secure}`,
+    'Set-Cookie': `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=${sameSite}; Max-Age=0${secure}`,
   });
 }
 
