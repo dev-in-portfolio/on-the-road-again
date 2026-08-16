@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { Prospect } from './types/prospect.ts';
-import { addRouteStop, moveRouteStop, resolveRoute, routeEntries, removeRouteStop, MAX_ROUTE, serializeRoute, parseRoute } from './route-state.ts';
+import { addRouteStop, moveRouteStop, resolveRoute, routeEntries, removeRouteStop, serializeRoute, parseRoute } from './route-state.ts';
 import { upsertProspect, removeProspectById, prependProspect } from './prospect-actions.ts';
 import { filterProspects } from './prospect-list.ts';
 import { buildRouteGoogleMapsUrl } from './google-maps.ts';
@@ -40,9 +40,9 @@ describe('field workflow integration', () => {
 
     // 2. Select several prospects and add them to Current Route.
     let route: string[] = [];
-    route = addRouteStop(route, 'lupies', MAX_ROUTE) ?? route;
-    route = addRouteStop(route, 'alexander', MAX_ROUTE) ?? route;
-    route = addRouteStop(route, 'garrison', MAX_ROUTE) ?? route;
+    route = addRouteStop(route, 'lupies') ?? route;
+    route = addRouteStop(route, 'alexander') ?? route;
+    route = addRouteStop(route, 'garrison') ?? route;
     assert.deepEqual(route, ['lupies', 'alexander', 'garrison']);
 
     // 3. Rearrange the route (move the last stop up).
@@ -109,7 +109,7 @@ describe('field workflow integration', () => {
     activeStore = prependProspect(activeStore, imported);
 
     // Add its ID to Current Route immediately, without reloading.
-    const route = addRouteStop([], imported.id, MAX_ROUTE) ?? [];
+    const route = addRouteStop([], imported.id) ?? [];
     assert.deepEqual(route, [imported.id]);
 
     // The route resolves against the canonical store and the handoff succeeds.

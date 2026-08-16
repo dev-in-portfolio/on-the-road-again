@@ -5,10 +5,11 @@ export type RouteResolution = {
   missingIds: string[];
 };
 
-export const MAX_ROUTE = 9;
+/** OTRA owns the complete itinerary; navigation export may split it into legs. */
+export const MAX_ROUTE = Number.POSITIVE_INFINITY;
 export const ROUTE_STORAGE_KEY = 'otra.currentRoute';
 
-export function addRouteStop(routeIds: string[], id: string, maxStops: number): string[] | null {
+export function addRouteStop(routeIds: string[], id: string, maxStops = MAX_ROUTE): string[] | null {
   if (routeIds.includes(id)) return routeIds;
   if (routeIds.length >= maxStops) return null;
   return [...routeIds, id];

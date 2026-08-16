@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">On the Road Again</string>
+    <string name="title_activity_main">On the Road Again</string>
+    <string name="package_name">com.darkstar.otra</string>
+    <string name="custom_url_scheme">com.darkstar.otra</string>
+</resources>

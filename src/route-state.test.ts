@@ -7,7 +7,6 @@ import {
   removeRouteStop,
   resolveRoute,
   routeEntries,
-  MAX_ROUTE,
   serializeRoute,
   parseRoute,
   loadRouteIds,
@@ -35,21 +34,21 @@ const prospect = (id: string, overrides: Partial<Prospect> = {}): Prospect => ({
 
 describe('route state — membership operations', () => {
   it('adds a stop to the end of the route', () => {
-    assert.deepEqual(addRouteStop(['a'], 'b', MAX_ROUTE), ['a', 'b']);
+    assert.deepEqual(addRouteStop(['a'], 'b'), ['a', 'b']);
   });
 
   it('does not add a duplicate stop (no-op)', () => {
-    assert.deepEqual(addRouteStop(['a', 'b'], 'a', MAX_ROUTE), ['a', 'b']);
+    assert.deepEqual(addRouteStop(['a', 'b'], 'a'), ['a', 'b']);
   });
 
   it('rejects an add when the route is at the maximum', () => {
     const full = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i'];
-    assert.equal(addRouteStop(full, 'j', MAX_ROUTE), null);
+    assert.equal(addRouteStop(full, 'j', 9), null);
   });
 
   it('allows filling exactly up to the maximum', () => {
     const eight = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
-    assert.deepEqual(addRouteStop(eight, 'i', MAX_ROUTE), [...eight, 'i']);
+    assert.deepEqual(addRouteStop(eight, 'i', 9), [...eight, 'i']);
   });
 
   it('removes a stop by id and leaves the rest in order', () => {
