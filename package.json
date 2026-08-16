@@ -8,13 +8,21 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "test": "node --experimental-strip-types --test src/*.test.ts netlify/functions/_shared/*.test.ts"
+    "test": "node --experimental-strip-types --test src/*.test.ts netlify/functions/_shared/*.test.ts",
+    "cap:sync": "npm run build && npx cap sync android",
+    "android:debug": "npm run cap:sync && npx cap open android"
   },
   "dependencies": {
+    "@capacitor/android": "^8.5.0",
+    "@capacitor/core": "^8.5.0",
+    "@capacitor/geolocation": "^8.2.2",
+    "@capacitor/network": "^8.0.1",
     "@libsql/client": "^0.14.0",
     "maplibre-gl": "^6.2.0"
   },
   "devDependencies": {
+    "@capacitor/assets": "^3.0.5",
+    "@capacitor/cli": "^8.4.2",
     "@netlify/functions": "^5.3.0",
     "@types/node": "^22.0.0",
     "typescript": "^5.5.0",
