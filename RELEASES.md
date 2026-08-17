@@ -2,6 +2,13 @@
 
 The app update manifest is served at `/mobile/android/stable.json` and `/mobile/android/beta.json`. These endpoints read release metadata from Netlify environment variables and never contain signing material.
 
+## Current stable release
+
+- Version: `1.0.2`
+- Build: `10002`
+- Tag: `android-v1.0.2-stable`
+- Release purpose: package the per-restaurant Google Maps route action and the bulk-route limit handling into the installed Android app.
+
 The release workflow requires the existing signing lineage. It must be configured with:
 
 - `OTRA_ANDROID_KEYSTORE_BASE64`
