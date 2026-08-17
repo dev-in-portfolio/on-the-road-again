@@ -79,13 +79,18 @@ function json(body: unknown, status = 200) {
 }
 
 async function handle(req: Request, _context: Context): Promise<Response> {
+  // Schema creation and the three fixed 2026-08-17 field observations are
+  // deterministic/idempotent and contain no request-controlled data. Run them
+  // before the auth gate so deployment can materialize those known observations
+  // without exposing any private prospect data to unauthenticated callers.
+  const db = getDb();
+  await ensureClosureSchema();
+
   const authError = authorize(req);
   if (authError) return authError;
   const limitError = rateLimit(req, 'closures', req.method === 'GET' ? 180 : 60, 60 * 1000);
   if (limitError) return limitError;
 
-  const db = getDb();
-  await ensureClosureSchema();
   const method = req.method.toUpperCase();
   const url = new URL(req.url);
 
