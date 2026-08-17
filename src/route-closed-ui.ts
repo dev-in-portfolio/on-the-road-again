@@ -29,19 +29,26 @@ async function ensureLoaded() {
 function renderClosureMemory(row: HTMLElement, prospectId: string) {
   const info = row.querySelector<HTMLElement>('.route-info');
   if (!info) return;
-  info.querySelector('.route-closure-memory')?.remove();
+  const existing = info.querySelector<HTMLElement>('.route-closure-memory');
   const observations = observationsByProspect.get(prospectId) || [];
   if (!observations.length) {
+    existing?.remove();
     row.classList.remove('route-closed-conflict');
     return;
   }
-
   const conflict = observations.find(item => isClosureConflict(item));
   const shown = conflict || observations[0];
-  const memory = document.createElement('div');
-  memory.className = `route-closure-memory${conflict ? ' conflict' : ''}`;
-  memory.textContent = `${conflict ? '⚠ ' : ''}Closed ${formatClosureTime(shown)}`;
-  info.appendChild(memory);
+  const label = `${conflict ? '⚠ ' : ''}Closed ${formatClosureTime(shown)}`;
+  const className = `route-closure-memory${conflict ? ' conflict' : ''}`;
+  if (existing) {
+    if (existing.textContent !== label) existing.textContent = label;
+    if (existing.className !== className) existing.className = className;
+  } else {
+    const memory = document.createElement('div');
+    memory.className = className;
+    memory.textContent = label;
+    info.appendChild(memory);
+  }
   row.classList.toggle('route-closed-conflict', Boolean(conflict));
 }
 
@@ -51,10 +58,8 @@ function enhanceRow(row: HTMLElement) {
   const name = row.querySelector<HTMLElement>('.route-name')?.textContent?.trim() || 'this stop';
   const prospectId = removeButton?.dataset.id || '';
   if (!controls || !removeButton || !prospectId || name === 'Unavailable prospect') return;
-
   renderClosureMemory(row, prospectId);
   if (row.dataset.closedEnhanced === 'true') return;
-
   const button = document.createElement('button');
   button.type = 'button';
   button.className = 'btn btn-small route-closed';
@@ -71,23 +76,19 @@ function enhanceRow(row: HTMLElement) {
       remember(observation);
       renderClosureMemory(row, prospectId);
       button.textContent = 'Closed ✓';
-      // A closed door is not a completed drop-off. Remove only from today's route.
       window.setTimeout(() => removeButton.click(), 180);
     } catch {
       button.disabled = false;
       button.textContent = 'Closed';
     }
   });
-
   const mapsButton = controls.querySelector('.route-single-gmaps');
   controls.insertBefore(button, mapsButton || removeButton);
   row.dataset.closedEnhanced = 'true';
 }
 
 export function enhanceClosedRouteUi(root: ParentNode = document) {
-  void ensureLoaded().then(() => {
-    root.querySelectorAll<HTMLElement>('.route-list .route-item').forEach(enhanceRow);
-  });
+  void ensureLoaded().then(() => root.querySelectorAll<HTMLElement>('.route-list .route-item').forEach(enhanceRow));
 }
 
 function install() {
