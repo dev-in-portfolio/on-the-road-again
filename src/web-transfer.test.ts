@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { FieldState } from './field-state';
+import type { FieldState } from './field-state.ts';
 import {
   WEB_TRANSFER_SCHEMA,
   buildAndroidTransferIntent,
@@ -10,7 +10,7 @@ import {
   mergeWebTransfer,
   parseNativeTransferUrl,
   transferFingerprint,
-} from './web-transfer';
+} from './web-transfer.ts';
 
 function state(overrides: Partial<FieldState> = {}): FieldState {
   return {
