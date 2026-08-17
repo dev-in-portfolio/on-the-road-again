@@ -1,3 +1,5 @@
+import { openGoogleMapsUrl } from './native-navigation.ts';
+
 export const GOOGLE_MAPS_MAX_ROUTE_STOPS = 10;
 
 export function isBulkGoogleMapsRouteSupported(stopCount: number): boolean {
@@ -17,10 +19,28 @@ export function buildSingleStopGoogleMapsUrl(destination: string): string {
   return `https://www.google.com/maps/dir/?${params.toString()}`;
 }
 
+export function buildBulkGoogleMapsRouteUrl(destinations: string[]): string {
+  const normalized = destinations.map(destination => destination.trim());
+  if (!normalized.length || normalized.some(destination => !destination)) {
+    throw new Error('Every route stop needs a destination.');
+  }
+  if (!isBulkGoogleMapsRouteSupported(normalized.length)) {
+    throw new Error(`Google Maps supports up to ${GOOGLE_MAPS_MAX_ROUTE_STOPS} route stops in this handoff.`);
+  }
+
+  const destination = normalized[normalized.length - 1];
+  const waypoints = normalized.slice(0, -1);
+  const params = new URLSearchParams({
+    api: '1',
+    travelmode: 'driving',
+    destination,
+  });
+  if (waypoints.length) params.set('waypoints', waypoints.join('|'));
+  return `https://www.google.com/maps/dir/?${params.toString()}`;
+}
+
 function openSingleStopInGoogleMaps(destination: string) {
-  const url = buildSingleStopGoogleMapsUrl(destination);
-  const mapsWindow = window.open(url, '_blank', 'noopener');
-  if (!mapsWindow) window.location.assign(url);
+  void openGoogleMapsUrl(buildSingleStopGoogleMapsUrl(destination));
 }
 
 function enhanceRouteRow(row: HTMLElement) {
@@ -47,14 +67,36 @@ function enhanceRouteRow(row: HTMLElement) {
   row.dataset.singleMapsEnhanced = 'true';
 }
 
+function installBulkNativeHandoff(button: HTMLButtonElement, routeList: HTMLElement | null) {
+  if (!routeList || button.dataset.nativeMapsEnhanced === 'true') return;
+  button.dataset.nativeMapsEnhanced = 'true';
+
+  button.addEventListener('click', event => {
+    if (button.disabled) return;
+    const rows = [...routeList.querySelectorAll<HTMLElement>('.route-item')];
+    const destinations = rows.map(row => {
+      const name = row.querySelector<HTMLElement>('.route-name')?.textContent?.trim() || '';
+      if (!name || name === 'Unavailable prospect') return '';
+      return row.querySelector<HTMLElement>('.route-addr')?.textContent?.trim() || '';
+    });
+    if (!destinations.length || destinations.some(destination => !destination)) return;
+
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    void openGoogleMapsUrl(buildBulkGoogleMapsRouteUrl(destinations));
+  }, { capture: true });
+}
+
 function updateBulkRouteControl(root: ParentNode) {
   const bulkButton = root.querySelector<HTMLButtonElement>('#btn-send-gmaps');
   if (!bulkButton) return;
 
-  const routeList = bulkButton.parentElement?.querySelector<HTMLElement>('.route-list');
+  const routeList = bulkButton.parentElement?.querySelector<HTMLElement>('.route-list') || null;
   const stopCount = routeList?.querySelectorAll('.route-item').length ?? 0;
   const parent = bulkButton.parentElement;
   if (!parent) return;
+
+  installBulkNativeHandoff(bulkButton, routeList);
 
   const existingNote = parent.querySelector<HTMLElement>('.route-maps-limit-note');
   if (isBulkGoogleMapsRouteSupported(stopCount)) {
