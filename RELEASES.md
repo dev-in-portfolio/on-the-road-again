@@ -4,10 +4,10 @@ The app update manifest is served at `/mobile/android/stable.json` and `/mobile/
 
 ## Current stable release
 
-- Version: `1.0.6`
-- Build: `10006`
-- Tag: `android-v1.0.6-stable`
-- Release purpose: measure the real Android navigation-bar inset and keep the OTRA bottom navigation and field panel fully above Samsung three-button or gesture system navigation instead of relying on fixed bottom padding.
+- Version: `1.0.7`
+- Build: `10007`
+- Tag: `android-v1.0.7-stable`
+- Release purpose: transfer browser-local OTRA field state into the installed Android app with one tap from the hosted web app, including route order, current/selected stop, map view, filters, and pending offline operations.
 
 The release workflow requires the existing signing lineage. It must be configured with:
 
