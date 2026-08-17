@@ -35,7 +35,7 @@ export async function verifyApkBytes(release: AndroidRelease, bytes: ArrayBuffer
   if (actualHash !== release.sha256.toLowerCase()) throw new Error('APK SHA-256 verification failed. Installation was blocked.');
 }
 
-async function waitForReturnToApp(timeoutMs = 120_000): Promise<() => Promise<void>> {
+async function watchForReturnToApp(timeoutMs = 120_000): Promise<{ wait: () => Promise<void>; remove: () => Promise<void> }> {
   let resolveReturn!: () => void;
   let sawInactive = false;
   const returned = new Promise<void>(resolve => { resolveReturn = resolve; });
@@ -44,48 +44,53 @@ async function waitForReturnToApp(timeoutMs = 120_000): Promise<() => Promise<vo
     else if (sawInactive) resolveReturn();
   });
 
-  const wait = async () => {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    try {
-      await Promise.race([
-        returned,
-        new Promise<never>((_, reject) => {
-          timer = setTimeout(() => reject(new Error('Install permission was not completed. Return to OTRA and tap Update again.')), timeoutMs);
-        }),
-      ]);
-    } finally {
-      if (timer) clearTimeout(timer);
-      await listener.remove();
-    }
+  return {
+    wait: async () => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          returned,
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(new Error('Install permission was not completed. Return to OTRA and tap Update again.')), timeoutMs);
+          }),
+        ]);
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    },
+    remove: () => listener.remove(),
   };
-  return wait;
 }
 
 async function installCachedApk(fileName: string): Promise<void> {
-  // Register for the activity transition before asking native Android to open
-  // settings so a fast settings round-trip cannot be missed.
-  const waitForReturn = await waitForReturnToApp();
-  let first: InstallApkResult;
+  // Register before asking Android to open settings so a fast settings
+  // round-trip cannot be missed.
+  const watcher = await watchForReturnToApp();
   try {
-    first = await OtraUpdater.installApk({ fileName });
-  } catch (error) {
-    // Compatibility path for pre-1.0.5 native bridges that reject rather than
-    // returning a structured permission state.
-    if (error instanceof Error && error.message.includes('unknown_apps_permission_required')) {
-      await OtraUpdater.openInstallSettings();
-      await waitForReturn();
-      const retry = await OtraUpdater.installApk({ fileName });
-      if (retry.status === 'permission_settings_opened') throw new Error('Allow installs from this source, then return to OTRA.');
-      return;
+    let first: InstallApkResult;
+    try {
+      first = await OtraUpdater.installApk({ fileName });
+    } catch (error) {
+      // Compatibility path for older bridges that reject instead of returning
+      // a structured permission state.
+      if (error instanceof Error && error.message.includes('unknown_apps_permission_required')) {
+        await OtraUpdater.openInstallSettings();
+        await watcher.wait();
+        const retry = await OtraUpdater.installApk({ fileName });
+        if (retry.status === 'permission_settings_opened') throw new Error('Allow installs from this source, then return to OTRA.');
+        return;
+      }
+      throw error;
     }
-    throw error;
-  }
 
-  if (first.status !== 'permission_settings_opened') return;
-  await waitForReturn();
-  const retry = await OtraUpdater.installApk({ fileName });
-  if (retry.status === 'permission_settings_opened') {
-    throw new Error('Allow installs from this source, then return to OTRA.');
+    if (first.status !== 'permission_settings_opened') return;
+    await watcher.wait();
+    const retry = await OtraUpdater.installApk({ fileName });
+    if (retry.status === 'permission_settings_opened') {
+      throw new Error('Allow installs from this source, then return to OTRA.');
+    }
+  } finally {
+    await watcher.remove();
   }
 }
 
