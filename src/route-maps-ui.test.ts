@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
   GOOGLE_MAPS_MAX_ROUTE_STOPS,
+  buildBulkGoogleMapsRouteUrl,
   buildSingleStopGoogleMapsUrl,
   isBulkGoogleMapsRouteSupported,
 } from './route-maps-ui.ts';
@@ -27,6 +28,23 @@ describe('buildSingleStopGoogleMapsUrl', () => {
 
   it('rejects a blank destination', () => {
     assert.throws(() => buildSingleStopGoogleMapsUrl('   '), /destination is required/i);
+  });
+});
+
+describe('buildBulkGoogleMapsRouteUrl', () => {
+  it('uses the final stop as destination and earlier stops as waypoints', () => {
+    const url = new URL(buildBulkGoogleMapsRouteUrl([
+      '100 First St, Charlotte, NC',
+      '200 Second St, Charlotte, NC',
+      '300 Third St, Charlotte, NC',
+    ]));
+    assert.equal(url.searchParams.get('destination'), '300 Third St, Charlotte, NC');
+    assert.equal(url.searchParams.get('waypoints'), '100 First St, Charlotte, NC|200 Second St, Charlotte, NC');
+    assert.equal(url.searchParams.get('travelmode'), 'driving');
+  });
+
+  it('rejects missing route destinations', () => {
+    assert.throws(() => buildBulkGoogleMapsRouteUrl(['100 First St', '   ']), /every route stop/i);
   });
 });
 
