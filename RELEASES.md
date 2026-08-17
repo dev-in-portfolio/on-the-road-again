@@ -4,10 +4,10 @@ The app update manifest is served at `/mobile/android/stable.json` and `/mobile/
 
 ## Current stable release
 
-- Version: `1.0.4`
-- Build: `10004`
-- Tag: `android-v1.0.4-stable`
-- Release purpose: add closed-time route memory, seed the August 17 Monday ~1 PM closure observations, repair the mobile route-row layout, and distinguish native APK installs from web/PWA installs.
+- Version: `1.0.5`
+- Build: `10005`
+- Tag: `android-v1.0.5-stable`
+- Release purpose: bootstrap field devices off the stuck 1.0.1 updater, resume verified APK installation after Android install-source permission, and send route handoffs directly to the native Google Maps app instead of competing with Chrome.
 
 The release workflow requires the existing signing lineage. It must be configured with:
 
