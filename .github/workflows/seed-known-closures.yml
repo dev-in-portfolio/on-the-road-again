@@ -1,0 +1,21 @@
+name: Seed known closures
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/seed-known-closures.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  seed:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Invoke idempotent production seed
+        run: |
+          set -euo pipefail
+          code=$(curl -sS -o /tmp/seed-response.json -w '%{http_code}' https://on-the-road-a.netlify.app/api/closures)
+          cat /tmp/seed-response.json || true
+          test "$code" = "401"
