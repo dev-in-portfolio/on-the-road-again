@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { OTRA_BUILD } from './app-release.ts';
 import { checkForAndroidUpdate, shouldCheckForUpdate, UPDATE_CHECK_INTERVAL_MS } from './update-manager.ts';
 
 const release = {
-  version: '1.0.2', build: 10002, minimumBuild: 10001, critical: false, channel: 'stable',
-  apk: 'https://github.com/dev-in-portfolio/on-the-road-again/releases/download/android-v1.0.2/otra.apk',
+  version: 'next', build: OTRA_BUILD + 1, minimumBuild: OTRA_BUILD, critical: false, channel: 'stable',
+  apk: 'https://github.com/dev-in-portfolio/on-the-road-again/releases/download/android-next/otra.apk',
   sha256: 'a'.repeat(64), size: 123, releaseNotes: 'Fixes', packageName: 'com.darkstar.otra',
 };
 
@@ -22,9 +23,9 @@ test('newer metadata is returned and lower metadata is ignored', async () => {
   let calls = 0;
   const fetchImpl = async () => { calls++; return new Response(JSON.stringify(release), { status: 200 }); };
   const first = await checkForAndroidUpdate({ force: true, now: 1000, storage: storage(), fetchImpl });
-  assert.equal(first.release?.build, 10002);
-  const older = { ...release, build: 10001 };
-  const second = await checkForAndroidUpdate({ force: true, now: 2000, storage: storage(), fetchImpl: async () => new Response(JSON.stringify(older)) });
+  assert.equal(first.release?.build, OTRA_BUILD + 1);
+  const current = { ...release, build: OTRA_BUILD };
+  const second = await checkForAndroidUpdate({ force: true, now: 2000, storage: storage(), fetchImpl: async () => new Response(JSON.stringify(current)) });
   assert.equal(second.release, null);
   assert.equal(calls, 1);
 });
