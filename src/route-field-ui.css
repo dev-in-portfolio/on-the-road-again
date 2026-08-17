@@ -1,0 +1,25 @@
+/* Route rows need to remain readable after field actions are added. */
+.route-closed{background:rgba(166,110,11,.10);color:#875800;border-color:rgba(166,110,11,.35)}
+.route-closure-memory{margin-top:5px;width:max-content;max-width:100%;padding:2px 5px;border:1px solid rgba(166,110,11,.28);border-radius:2px;background:rgba(232,184,74,.10);color:#75500e;font-family:var(--font-mono);font-size:.61rem;font-weight:700;line-height:1.25}
+.route-closure-memory.conflict{border-color:rgba(169,50,59,.42);background:rgba(201,79,104,.12);color:#8d2438}
+.route-closed-conflict{box-shadow:inset 4px 0 0 rgba(169,50,59,.55)}
+
+@media(max-width:600px){
+  #panel-container:has(#btn-route-back) .route-item{display:grid;grid-template-columns:34px minmax(0,1fr);grid-template-areas:"num info" "num controls";align-items:start;column-gap:8px;row-gap:8px;padding:10px 6px 11px}
+  #panel-container:has(#btn-route-back) .route-num{grid-area:num;min-width:0;padding-top:1px}
+  #panel-container:has(#btn-route-back) .route-info{grid-area:info;width:100%;min-width:0}
+  #panel-container:has(#btn-route-back) .route-name{font-size:.92rem;line-height:1.18;overflow-wrap:anywhere}
+  #panel-container:has(#btn-route-back) .route-addr{margin-top:4px;font-size:.72rem;line-height:1.35;overflow-wrap:anywhere}
+  #panel-container:has(#btn-route-back) .route-ctrls{grid-area:controls;width:100%;display:grid;grid-template-columns:42px 42px minmax(92px,1fr) minmax(66px,.72fr) minmax(62px,.7fr) 44px;gap:5px;align-items:stretch}
+  #panel-container:has(#btn-route-back) .route-ctrls .btn-small{width:100%;min-width:0;min-height:42px;padding:5px 6px;font-size:.69rem;white-space:nowrap}
+}
+
+@media(max-width:430px){
+  #panel-container:has(#btn-route-back) .route-ctrls{grid-template-columns:repeat(2,42px) repeat(2,minmax(0,1fr))}
+  #panel-container:has(#btn-route-back) .route-up{grid-column:1}
+  #panel-container:has(#btn-route-back) .route-dn{grid-column:2}
+  #panel-container:has(#btn-route-back) .route-drop{grid-column:3 / 5}
+  #panel-container:has(#btn-route-back) .route-closed{grid-column:1 / 3}
+  #panel-container:has(#btn-route-back) .route-single-gmaps{grid-column:3}
+  #panel-container:has(#btn-route-back) .route-rm{grid-column:4}
+}
