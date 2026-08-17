@@ -50,6 +50,7 @@ export async function downloadVerifyAndInstall(release: AndroidRelease, installe
   } catch (error) {
     if (error instanceof Error && error.message.includes('unknown_apps_permission_required')) {
       await OtraUpdater.openInstallSettings();
+      throw new Error('Allow installs from this source, return to OTRA, then tap Update again.');
     }
     throw error;
   }
