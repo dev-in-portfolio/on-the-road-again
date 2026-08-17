@@ -1,3 +1,4 @@
 @import 'maplibre-gl/dist/maplibre-gl.css';
 @import './blueprint-v2.css';
 @import './route-field-ui.css';
+@import './native-safe-area.css';
