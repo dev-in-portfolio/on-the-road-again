@@ -1,10 +1,12 @@
+import { App } from '@capacitor/app';
 import { Directory, Filesystem } from '@capacitor/filesystem';
 import { Capacitor, registerPlugin } from '@capacitor/core';
 import { OTRA_PACKAGE_ID } from './app-release.ts';
 import type { AndroidRelease } from './mobile-updates.ts';
 
+type InstallApkResult = { status?: 'installer_opened' | 'permission_settings_opened' };
 type OtraUpdaterPlugin = {
-  installApk(options: { fileName: string }): Promise<void>;
+  installApk(options: { fileName: string }): Promise<InstallApkResult>;
   openInstallSettings(): Promise<void>;
 };
 
@@ -33,6 +35,60 @@ export async function verifyApkBytes(release: AndroidRelease, bytes: ArrayBuffer
   if (actualHash !== release.sha256.toLowerCase()) throw new Error('APK SHA-256 verification failed. Installation was blocked.');
 }
 
+async function waitForReturnToApp(timeoutMs = 120_000): Promise<() => Promise<void>> {
+  let resolveReturn!: () => void;
+  let sawInactive = false;
+  const returned = new Promise<void>(resolve => { resolveReturn = resolve; });
+  const listener = await App.addListener('appStateChange', ({ isActive }) => {
+    if (!isActive) sawInactive = true;
+    else if (sawInactive) resolveReturn();
+  });
+
+  const wait = async () => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        returned,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error('Install permission was not completed. Return to OTRA and tap Update again.')), timeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+      await listener.remove();
+    }
+  };
+  return wait;
+}
+
+async function installCachedApk(fileName: string): Promise<void> {
+  // Register for the activity transition before asking native Android to open
+  // settings so a fast settings round-trip cannot be missed.
+  const waitForReturn = await waitForReturnToApp();
+  let first: InstallApkResult;
+  try {
+    first = await OtraUpdater.installApk({ fileName });
+  } catch (error) {
+    // Compatibility path for pre-1.0.5 native bridges that reject rather than
+    // returning a structured permission state.
+    if (error instanceof Error && error.message.includes('unknown_apps_permission_required')) {
+      await OtraUpdater.openInstallSettings();
+      await waitForReturn();
+      const retry = await OtraUpdater.installApk({ fileName });
+      if (retry.status === 'permission_settings_opened') throw new Error('Allow installs from this source, then return to OTRA.');
+      return;
+    }
+    throw error;
+  }
+
+  if (first.status !== 'permission_settings_opened') return;
+  await waitForReturn();
+  const retry = await OtraUpdater.installApk({ fileName });
+  if (retry.status === 'permission_settings_opened') {
+    throw new Error('Allow installs from this source, then return to OTRA.');
+  }
+}
+
 export async function downloadVerifyAndInstall(release: AndroidRelease, installedBuild: number, fetchImpl: typeof fetch = fetch): Promise<void> {
   if (!Capacitor.isNativePlatform()) throw new Error('APK installation is available in the Android app only.');
   if (release.packageName !== OTRA_PACKAGE_ID) throw new Error('The update package identity is not OTRA.');
@@ -45,13 +101,5 @@ export async function downloadVerifyAndInstall(release: AndroidRelease, installe
   const fileName = `otra-${release.version}-${release.build}.apk`;
   try { await Filesystem.deleteFile({ directory: Directory.Cache, path: fileName }); } catch { /* stale file is optional */ }
   await Filesystem.writeFile({ directory: Directory.Cache, path: fileName, data: toBase64(new Uint8Array(bytes)), recursive: true });
-  try {
-    await OtraUpdater.installApk({ fileName });
-  } catch (error) {
-    if (error instanceof Error && error.message.includes('unknown_apps_permission_required')) {
-      await OtraUpdater.openInstallSettings();
-      throw new Error('Allow installs from this source, return to OTRA, then tap Update again.');
-    }
-    throw error;
-  }
+  await installCachedApk(fileName);
 }
