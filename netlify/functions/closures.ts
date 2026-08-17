@@ -16,9 +16,9 @@ type ClosureObservation = {
 };
 
 const seededClosures = [
-  "Kit’s Trackside Crafts",
-  "Margaux’s Wine, Pizza & Market",
-  'The Garrison',
+  { key: 'kits-trackside-crafts', pattern: 'Kit%Trackside%Crafts' },
+  { key: 'margauxs-wine-pizza-market', pattern: 'Margaux%Wine%Pizza%Market' },
+  { key: 'the-garrison', pattern: 'The Garrison' },
 ] as const;
 
 async function ensureClosureSchema() {
@@ -38,19 +38,18 @@ async function ensureClosureSchema() {
 
   // Field observations captured from the 2026-08-17 route screenshots.
   // Deterministic IDs make this safe to run on every cold start.
-  for (const restaurantName of seededClosures) {
+  for (const seed of seededClosures) {
     const matches = await db.execute({
-      sql: 'SELECT id FROM prospects WHERE LOWER(restaurant_name) = LOWER(?) LIMIT 1',
-      args: [restaurantName],
+      sql: 'SELECT id FROM prospects WHERE LOWER(restaurant_name) LIKE LOWER(?) LIMIT 1',
+      args: [seed.pattern],
     });
     if (!matches.rows.length) continue;
     const prospectId = String(matches.rows[0].id);
-    const seedId = `seed-20260817-${restaurantName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')}`;
     await db.execute({
       sql: `INSERT OR IGNORE INTO closure_observations (id, prospect_id, weekday, minute_of_day, observed_at, note, created_at)
             VALUES (?, ?, 1, 780, ?, ?, ?)`,
       args: [
-        seedId,
+        `seed-20260817-${seed.key}`,
         prospectId,
         '2026-08-17T13:08:00-04:00',
         'Field observation: closed Monday around 1 PM',
