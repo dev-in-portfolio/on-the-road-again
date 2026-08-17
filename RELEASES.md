@@ -4,10 +4,10 @@ The app update manifest is served at `/mobile/android/stable.json` and `/mobile/
 
 ## Current stable release
 
-- Version: `1.0.5`
-- Build: `10005`
-- Tag: `android-v1.0.5-stable`
-- Release purpose: bootstrap field devices off the stuck 1.0.1 updater, resume verified APK installation after Android install-source permission, and send route handoffs directly to the native Google Maps app instead of competing with Chrome.
+- Version: `1.0.6`
+- Build: `10006`
+- Tag: `android-v1.0.6-stable`
+- Release purpose: measure the real Android navigation-bar inset and keep the OTRA bottom navigation and field panel fully above Samsung three-button or gesture system navigation instead of relying on fixed bottom padding.
 
 The release workflow requires the existing signing lineage. It must be configured with:
 
