@@ -1,0 +1,36 @@
+:root {
+  --native-bottom-inset: 0px;
+  --app-bottom-inset: max(env(safe-area-inset-bottom, 0px), var(--native-bottom-inset));
+  --app-bottom-nav-height: 68px;
+}
+
+/*
+ * Android 15/16 can render a Capacitor WebView edge-to-edge underneath the
+ * system navigation area. MainActivity writes the measured navigation-bar
+ * inset into --native-bottom-inset. Keep the interactive OTRA nav above that
+ * inset while allowing the nav background to extend underneath it.
+ */
+#bottom-nav {
+  height: calc(var(--app-bottom-nav-height) + var(--app-bottom-inset));
+  padding-bottom: calc(6px + var(--app-bottom-inset));
+}
+
+#panel-container {
+  bottom: calc(var(--app-bottom-nav-height) + var(--app-bottom-inset));
+  max-height: calc(70vh - 20px - var(--app-bottom-inset));
+  max-height: calc(70dvh - 20px - var(--app-bottom-inset));
+}
+
+@media (min-width: 760px) {
+  #bottom-nav {
+    bottom: calc(14px + var(--app-bottom-inset));
+    height: var(--app-bottom-nav-height);
+    padding-bottom: 6px;
+  }
+
+  #panel-container {
+    bottom: calc(92px + var(--app-bottom-inset));
+    max-height: 72vh;
+    max-height: 72dvh;
+  }
+}
