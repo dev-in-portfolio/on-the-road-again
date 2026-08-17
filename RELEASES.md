@@ -4,10 +4,10 @@ The app update manifest is served at `/mobile/android/stable.json` and `/mobile/
 
 ## Current stable release
 
-- Version: `1.0.2`
-- Build: `10002`
-- Tag: `android-v1.0.2-stable`
-- Release purpose: package the per-restaurant Google Maps route action and the bulk-route limit handling into the installed Android app.
+- Version: `1.0.3`
+- Build: `10003`
+- Tag: `android-v1.0.3-stable`
+- Release purpose: repair the native Android Package Installer handoff, add explicit unknown-app permission handling, and retain the per-restaurant Google Maps route action.
 
 The release workflow requires the existing signing lineage. It must be configured with:
 
