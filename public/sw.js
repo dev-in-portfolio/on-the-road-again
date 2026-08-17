@@ -1,7 +1,7 @@
 // App-shell service worker. Keep API responses out of the cache and always
 // check the network for navigation so a new deploy cannot strand a user on an
 // old HTML file that references deleted, hashed JavaScript assets.
-const CACHE = 'otra-v2';
+const CACHE = 'otra-v4-1.0.4';
 const OFFLINE_FALLBACK = '/index.html';
 
 self.addEventListener('install', (event) => {
